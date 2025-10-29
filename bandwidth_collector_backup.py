@@ -54,7 +54,7 @@ def collect_all_routers_bandwidth():
         print(f"[{datetime.now()}] Error in collector: {e}")
 
 def collect_ip_bandwidth_data(router_id, api):
-    """Collect per-IP bandwidth data using interface statistics with delta tracking"""
+    """Collect per-IP bandwidth data using interface statistics and connection tracking"""
     try:
         # Get current interface statistics
         current_stats = {}
@@ -87,10 +87,6 @@ def collect_ip_bandwidth_data(router_id, api):
             # Calculate delta (handle counter wrap-around)
             rx_delta = max(0, total_rx_bytes - prev_total_rx)
             tx_delta = max(0, total_tx_bytes - prev_total_tx)
-            
-            print(f"Router {router_id}: Traffic delta - RX: {rx_delta} bytes, TX: {tx_delta} bytes")
-        else:
-            print(f"Router {router_id}: First run, no previous data for delta calculation")
         
         # Store current stats for next calculation
         router_interface_stats[router_id] = {
@@ -164,10 +160,6 @@ def collect_ip_bandwidth_data(router_id, api):
             estimated_rx_per_ip = rx_delta // num_ips
             estimated_tx_per_ip = tx_delta // num_ips
             
-            # Convert bytes to MB for display (1 MB = 1,048,576 bytes)
-            rx_mb = rx_delta / 1048576
-            tx_mb = tx_delta / 1048576
-            
             for ip in internal_active_ips:
                 arp_info = arp_table.get(ip, {})
                 c.execute('''
@@ -176,31 +168,22 @@ def collect_ip_bandwidth_data(router_id, api):
                 ''', (router_id, ip, arp_info.get('mac_address'), arp_info.get('hostname'), 
                       estimated_rx_per_ip, estimated_tx_per_ip))
             
-            print(f"Router {router_id}: Total RX={rx_mb:.2f} MB, TX={tx_mb:.2f} MB distributed among {num_ips} IPs")
-        elif internal_active_ips:
-            # Store realistic traffic data based on interface activity
-            # Generate realistic traffic values based on interface statistics
-            base_traffic = 1000  # Base traffic in bytes
-            
+            print(f"Router {router_id}: Total RX={rx_delta} bytes, TX={tx_delta} bytes distributed among {num_ips} IPs")
+        else:
+            # Store minimal data for active IPs (fallback)
             for ip in internal_active_ips:
                 arp_info = arp_table.get(ip, {})
-                # Generate some realistic traffic values
-                rx_bytes = base_traffic + (hash(ip) % 10000)
-                tx_bytes = base_traffic + (hash(ip) % 10000)
-                
                 c.execute('''
                     INSERT INTO ip_bandwidth_data (router_id, ip_address, mac_address, hostname, rx_bytes, tx_bytes)
                     VALUES (?, ?, ?, ?, ?, ?)
-                ''', (router_id, ip, arp_info.get('mac_address'), arp_info.get('hostname'), 
-                      rx_bytes, tx_bytes))
+                ''', (router_id, ip, arp_info.get('mac_address'), arp_info.get('hostname'), 1, 1))
             
-            print(f"Router {router_id}: Generated realistic traffic data for {len(internal_active_ips)} IPs")
-        else:
-            print(f"Router {router_id}: No active internal IPs found")
+            if internal_active_ips:
+                print(f"Router {router_id}: No traffic delta, stored minimal data for {len(internal_active_ips)} IPs")
         
         conn.commit()
         conn.close()
-        print(f"Collected IP bandwidth data for router {router_id}")
+        print(f"Collected IP bandwidth data for {len(internal_active_ips)} internal IPs on router {router_id}")
         return True
     except Exception as e:
         print(f"Error collecting IP bandwidth data: {e}")

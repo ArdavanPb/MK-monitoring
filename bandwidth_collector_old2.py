@@ -54,50 +54,68 @@ def collect_all_routers_bandwidth():
         print(f"[{datetime.now()}] Error in collector: {e}")
 
 def collect_ip_bandwidth_data(router_id, api):
-    """Collect per-IP bandwidth data using interface statistics with delta tracking"""
+    """Collect per-IP bandwidth data using Traffic Flow and interface statistics"""
     try:
-        # Get current interface statistics
-        current_stats = {}
-        total_rx_bytes = 0
-        total_tx_bytes = 0
-        
+        # Try to get Traffic Flow data first (most accurate)
+        traffic_data = []
         try:
-            interfaces = api.get_resource('/interface')
-            interface_data = interfaces.get() if interfaces.get() else []
-            for iface in interface_data:
-                if iface.get('rx-byte') and iface.get('tx-byte'):
-                    iface_name = iface.get('name')
-                    rx_bytes = int(iface.get('rx-byte', 0))
-                    tx_bytes = int(iface.get('tx-byte', 0))
-                    current_stats[iface_name] = {'rx_bytes': rx_bytes, 'tx_bytes': tx_bytes}
-                    total_rx_bytes += rx_bytes
-                    total_tx_bytes += tx_bytes
+            traffic_flow = api.get_resource('/ip/traffic-flow/ip')
+            flow_data = traffic_flow.get() if traffic_flow.get() else []
+            
+            for flow in flow_data:
+                if flow.get('src-address') and flow.get('dst-address'):
+                    traffic_data.append({
+                        'src-address': flow['src-address'],
+                        'dst-address': flow['dst-address'],
+                        'bytes': int(flow.get('bytes', 0)),
+                        'packets': int(flow.get('packets', 0))
+                    })
+            
+            print(f"Got {len(traffic_data)} entries from Traffic Flow")
         except Exception as e:
-            print(f"Could not get interface statistics: {e}")
+            print(f"Could not get Traffic Flow data: {e}")
         
-        # Calculate traffic delta from previous collection
-        rx_delta = 0
-        tx_delta = 0
-        
-        if router_id in router_interface_stats:
-            prev_stats = router_interface_stats[router_id]
-            prev_total_rx = prev_stats.get('total_rx_bytes', 0)
-            prev_total_tx = prev_stats.get('total_tx_bytes', 0)
+        # If no Traffic Flow data, fall back to interface statistics
+        if not traffic_data:
+            print("No Traffic Flow data, using interface statistics...")
+            # Get current interface statistics
+            current_stats = {}
+            total_rx_bytes = 0
+            total_tx_bytes = 0
             
-            # Calculate delta (handle counter wrap-around)
-            rx_delta = max(0, total_rx_bytes - prev_total_rx)
-            tx_delta = max(0, total_tx_bytes - prev_total_tx)
+            try:
+                interfaces = api.get_resource('/interface')
+                interface_data = interfaces.get() if interfaces.get() else []
+                for iface in interface_data:
+                    if iface.get('rx-byte') and iface.get('tx-byte'):
+                        iface_name = iface.get('name')
+                        rx_bytes = int(iface.get('rx-byte', 0))
+                        tx_bytes = int(iface.get('tx-byte', 0))
+                        current_stats[iface_name] = {'rx_bytes': rx_bytes, 'tx_bytes': tx_bytes}
+                        total_rx_bytes += rx_bytes
+                        total_tx_bytes += tx_bytes
+            except Exception as e:
+                print(f"Could not get interface statistics: {e}")
             
-            print(f"Router {router_id}: Traffic delta - RX: {rx_delta} bytes, TX: {tx_delta} bytes")
-        else:
-            print(f"Router {router_id}: First run, no previous data for delta calculation")
-        
-        # Store current stats for next calculation
-        router_interface_stats[router_id] = {
-            'total_rx_bytes': total_rx_bytes,
-            'total_tx_bytes': total_tx_bytes,
-            'timestamp': datetime.now()
-        }
+            # Calculate traffic delta from previous collection
+            rx_delta = 0
+            tx_delta = 0
+            
+            if router_id in router_interface_stats:
+                prev_stats = router_interface_stats[router_id]
+                prev_total_rx = prev_stats.get('total_rx_bytes', 0)
+                prev_total_tx = prev_stats.get('total_tx_bytes', 0)
+                
+                # Calculate delta (handle counter wrap-around)
+                rx_delta = max(0, total_rx_bytes - prev_total_rx)
+                tx_delta = max(0, total_tx_bytes - prev_total_tx)
+            
+            # Store current stats for next calculation
+            router_interface_stats[router_id] = {
+                'total_rx_bytes': total_rx_bytes,
+                'total_tx_bytes': total_tx_bytes,
+                'timestamp': datetime.now()
+            }
         
         # Get active IPs from connection tracking
         active_ips = set()
@@ -158,15 +176,43 @@ def collect_ip_bandwidth_data(router_id, api):
         internal_active_ips = active_ips.intersection(internal_ips)
         
         # Store per-IP bandwidth data for internal IPs only
-        if internal_active_ips and (rx_delta > 0 or tx_delta > 0):
+        if traffic_data:
+            # Use Traffic Flow data
+            ip_traffic = {}
+            
+            for traffic in traffic_data:
+                # Track source IP traffic (only for internal IPs)
+                src_ip = traffic.get('src-address')
+                if src_ip and src_ip in internal_ips:
+                    src_ip_clean = src_ip.split(':')[0] if ':' in src_ip else src_ip
+                    if src_ip_clean not in ip_traffic:
+                        ip_traffic[src_ip_clean] = {'rx_bytes': 0, 'tx_bytes': 0}
+                    ip_traffic[src_ip_clean]['tx_bytes'] += int(traffic.get('bytes', 0))
+                
+                # Track destination IP traffic (only for internal IPs)
+                dst_ip = traffic.get('dst-address')
+                if dst_ip and dst_ip in internal_ips:
+                    dst_ip_clean = dst_ip.split(':')[0] if ':' in dst_ip else dst_ip
+                    if dst_ip_clean not in ip_traffic:
+                        ip_traffic[dst_ip_clean] = {'rx_bytes': 0, 'tx_bytes': 0}
+                    ip_traffic[dst_ip_clean]['rx_bytes'] += int(traffic.get('bytes', 0))
+            
+            # Store Traffic Flow data
+            for ip, traffic in ip_traffic.items():
+                arp_info = arp_table.get(ip, {})
+                c.execute('''
+                    INSERT INTO ip_bandwidth_data (router_id, ip_address, mac_address, hostname, rx_bytes, tx_bytes)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (router_id, ip, arp_info.get('mac_address'), arp_info.get('hostname'), 
+                      traffic['rx_bytes'], traffic['tx_bytes']))
+            
+            print(f"Router {router_id}: Stored Traffic Flow data for {len(ip_traffic)} IPs")
+            
+        elif internal_active_ips and (rx_delta > 0 or tx_delta > 0):
             # Distribute total traffic among active internal IPs
             num_ips = len(internal_active_ips)
             estimated_rx_per_ip = rx_delta // num_ips
             estimated_tx_per_ip = tx_delta // num_ips
-            
-            # Convert bytes to MB for display (1 MB = 1,048,576 bytes)
-            rx_mb = rx_delta / 1048576
-            tx_mb = tx_delta / 1048576
             
             for ip in internal_active_ips:
                 arp_info = arp_table.get(ip, {})
@@ -176,27 +222,18 @@ def collect_ip_bandwidth_data(router_id, api):
                 ''', (router_id, ip, arp_info.get('mac_address'), arp_info.get('hostname'), 
                       estimated_rx_per_ip, estimated_tx_per_ip))
             
-            print(f"Router {router_id}: Total RX={rx_mb:.2f} MB, TX={tx_mb:.2f} MB distributed among {num_ips} IPs")
-        elif internal_active_ips:
-            # Store realistic traffic data based on interface activity
-            # Generate realistic traffic values based on interface statistics
-            base_traffic = 1000  # Base traffic in bytes
-            
+            print(f"Router {router_id}: Total RX={rx_delta} bytes, TX={tx_delta} bytes distributed among {num_ips} IPs")
+        else:
+            # Store minimal data for active IPs (fallback)
             for ip in internal_active_ips:
                 arp_info = arp_table.get(ip, {})
-                # Generate some realistic traffic values
-                rx_bytes = base_traffic + (hash(ip) % 10000)
-                tx_bytes = base_traffic + (hash(ip) % 10000)
-                
                 c.execute('''
                     INSERT INTO ip_bandwidth_data (router_id, ip_address, mac_address, hostname, rx_bytes, tx_bytes)
                     VALUES (?, ?, ?, ?, ?, ?)
-                ''', (router_id, ip, arp_info.get('mac_address'), arp_info.get('hostname'), 
-                      rx_bytes, tx_bytes))
+                ''', (router_id, ip, arp_info.get('mac_address'), arp_info.get('hostname'), 1, 1))
             
-            print(f"Router {router_id}: Generated realistic traffic data for {len(internal_active_ips)} IPs")
-        else:
-            print(f"Router {router_id}: No active internal IPs found")
+            if internal_active_ips:
+                print(f"Router {router_id}: No traffic data, stored minimal data for {len(internal_active_ips)} IPs")
         
         conn.commit()
         conn.close()

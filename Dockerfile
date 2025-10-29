@@ -12,5 +12,5 @@ COPY . .
 
 EXPOSE 8080
 
-# Use a startup script to run both services
-CMD ["./start.sh"]
+# Start both services directly
+CMD python bandwidth_collector.py & python app.py
