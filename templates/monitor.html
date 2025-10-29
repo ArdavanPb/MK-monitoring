@@ -1,0 +1,467 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1>Router Monitoring: {{ router.name }}</h1>
+    <div>
+        <a href="{{ url_for('index') }}" class="btn btn-secondary">Back to Dashboard</a>
+        <a href="{{ url_for('refresh_router', router_id=router.id) }}" class="btn btn-outline-primary">Refresh</a>
+    </div>
+</div>
+
+<div class="row">
+    <!-- System Information -->
+    <div class="col-md-6">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="card-title mb-0">System Identity</h5>
+            </div>
+            <div class="card-body">
+                <table class="table table-sm">
+                    <tr>
+                        <th>Router Name:</th>
+                        <td>{{ info.identity.name if info.identity.name else 'N/A' }}</td>
+                    </tr>
+                    <tr>
+                        <th>Firmware:</th>
+                        <td>{{ info.resources.version if info.resources.version else 'N/A' }}</td>
+                    </tr>
+                    <tr>
+                        <th>Architecture:</th>
+                        <td>{{ info.resources.architecture_name if info.resources.architecture_name else 'N/A' }}</td>
+                    </tr>
+                    <tr>
+                        <th>Board Name:</th>
+                        <td>{{ info.resources.board_name if info.resources.board_name else 'N/A' }}</td>
+                    </tr>
+                    <tr>
+                        <th>Platform:</th>
+                        <td>{{ info.resources.platform if info.resources.platform else 'N/A' }}</td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+
+        <!-- System Resources -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="card-title mb-0">System Resources</h5>
+            </div>
+            <div class="card-body">
+                <table class="table table-sm">
+                    <tr>
+                        <th>Uptime:</th>
+                        <td>{{ info.resources.uptime if info.resources.uptime else 'N/A' }}</td>
+                    </tr>
+                    <tr>
+                        <th>CPU Load:</th>
+                        <td>
+                            {% if info.resources.cpu_load %}
+                                <span class="badge bg-{{ 'success' if info.resources.cpu_load|float < 50 else 'warning' if info.resources.cpu_load|float < 80 else 'danger' }}">
+                                    {{ info.resources.cpu_load }}%
+                                </span>
+                            {% else %}
+                                <span class="badge bg-secondary">N/A</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    <tr>
+                        <th>Memory Usage:</th>
+                        <td>
+                            {% if info.resources.total_memory and info.resources.used_memory %}
+                                {% set total_mem = info.resources.total_memory|int / 1024 / 1024 %}
+                                {% set used_mem = info.resources.used_memory|int / 1024 / 1024 %}
+                                {% set usage_percent = (used_mem / total_mem * 100)|round(1) %}
+                                <div class="progress" style="height: 20px;">
+                                    <div class="progress-bar bg-{{ 'success' if usage_percent < 70 else 'warning' if usage_percent < 85 else 'danger' }}" 
+                                         role="progressbar" 
+                                         style="width: {{ usage_percent }}%" 
+                                         aria-valuenow="{{ usage_percent }}" 
+                                         aria-valuemin="0" 
+                                         aria-valuemax="100">
+                                        {{ usage_percent }}%
+                                    </div>
+                                </div>
+                                <small class="text-muted">{{ used_mem|round(1) }}MB / {{ total_mem|round(1) }}MB</small>
+                            {% else %}
+                                <span class="text-muted">Memory data not available</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    <tr>
+                        <th>Free Memory:</th>
+                        <td>
+                            {% if info.resources.free_memory %}
+                                {{ (info.resources.free_memory|int / 1024 / 1024)|round(1) }}MB
+                            {% else %}
+                                <span class="text-muted">N/A</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- System Clock & Additional Info -->
+    <div class="col-md-6">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="card-title mb-0">System Clock</h5>
+            </div>
+            <div class="card-body">
+                <table class="table table-sm">
+                    <tr>
+                        <th>Date:</th>
+                        <td>{{ info.clock.date if info.clock.date else 'N/A' }}</td>
+                    </tr>
+                    <tr>
+                        <th>Time:</th>
+                        <td>{{ info.clock.time if info.clock.time else 'N/A' }}</td>
+                    </tr>
+                    <tr>
+                        <th>Timezone:</th>
+                        <td>{{ info.clock.time_zone_name if info.clock.time_zone_name else 'N/A' }}</td>
+                    </tr>
+                    <tr>
+                        <th>Uptime:</th>
+                        <td>{{ info.clock.uptime if info.clock.uptime else 'N/A' }}</td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+
+        <!-- System Health -->
+        {% if info.health %}
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="card-title mb-0">System Health</h5>
+            </div>
+            <div class="card-body">
+                <table class="table table-sm">
+                    {% if info.health.temperature %}
+                    <tr>
+                        <th>Temperature:</th>
+                        <td>
+                            <span class="badge bg-{{ 'success' if info.health.temperature|float < 60 else 'warning' if info.health.temperature|float < 70 else 'danger' }}">
+                                {{ info.health.temperature }}°C
+                            </span>
+                        </td>
+                    </tr>
+                    {% endif %}
+                    {% if info.health.cpu_temperature %}
+                    <tr>
+                        <th>CPU Temp:</th>
+                        <td>
+                            <span class="badge bg-{{ 'success' if info.health.cpu_temperature|float < 60 else 'warning' if info.health.cpu_temperature|float < 70 else 'danger' }}">
+                                {{ info.health.cpu_temperature }}°C
+                            </span>
+                        </td>
+                    </tr>
+                    {% endif %}
+                    {% if info.health.power_consumption %}
+                    <tr>
+                        <th>Power:</th>
+                        <td>{{ info.health.power_consumption }}W</td>
+                    </tr>
+                    {% endif %}
+                </table>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- License Information -->
+        {% if info.license %}
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="card-title mb-0">License Information</h5>
+            </div>
+            <div class="card-body">
+                <table class="table table-sm">
+                    {% if info.license.software_id %}
+                    <tr>
+                        <th>Software ID:</th>
+                        <td><code>{{ info.license.software_id }}</code></td>
+                    </tr>
+                    {% endif %}
+                    {% if info.license.level %}
+                    <tr>
+                        <th>Level:</th>
+                        <td>{{ info.license.level }}</td>
+                    </tr>
+                    {% endif %}
+                    {% if info.license.nlevel %}
+                    <tr>
+                        <th>N-Level:</th>
+                        <td>{{ info.license.nlevel }}</td>
+                    </tr>
+                    {% endif %}
+                    {% if info.license.features %}
+                    <tr>
+                        <th>Features:</th>
+                        <td>{{ info.license.features }}</td>
+                    </tr>
+                    {% endif %}
+                </table>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Network Information Row -->
+<div class="row">
+    <!-- IP Addresses with MAC & ARP -->
+    <div class="col-md-6">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="card-title mb-0">IP Addresses ({{ info.ip_addresses|length }})</h5>
+            </div>
+            <div class="card-body">
+                {% if info.ip_addresses %}
+                    <div class="table-responsive">
+                        <table class="table table-striped table-sm">
+                            <thead>
+                                <tr>
+                                    <th>Address</th>
+                                    <th>Network</th>
+                                    <th>Interface</th>
+                                    <th>MAC Address</th>
+                                    <th>Hostname</th>
+                                    <th>Type</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for ip in info.ip_addresses %}
+                                <tr>
+                                    <td><code>{{ ip.address }}</code></td>
+                                    <td><code>{{ ip.network }}</code></td>
+                                    <td>{{ ip.interface }}</td>
+                                    <td>
+                                        {% set found_mac = false %}
+                                        {% for arp in info.arp_table %}
+                                            {% if arp.address == ip.address and arp.mac_address %}
+                                                {% set found_mac = true %}
+                                                <code>{{ arp.mac_address }}</code>
+                                            {% endif %}
+                                        {% endfor %}
+                                        {% if not found_mac %}
+                                            <span class="text-muted">N/A</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        {% set found_hostname = false %}
+                                        {% for arp in info.arp_table %}
+                                            {% if arp.address == ip.address and arp.host_name %}
+                                                {% set found_hostname = true %}
+                                                {{ arp.host_name }}
+                                            {% endif %}
+                                        {% endfor %}
+                                        {% if not found_hostname %}
+                                            {% for lease in info.dhcp_leases %}
+                                                {% if lease.address == ip.address and lease.host_name %}
+                                                    {% set found_hostname = true %}
+                                                    {{ lease.host_name }}
+                                                {% endif %}
+                                            {% endfor %}
+                                        {% endif %}
+                                        {% if not found_hostname %}
+                                            <span class="text-muted">N/A</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        {% if ip.dynamic == 'true' %}
+                                            <span class="badge bg-info">Dynamic</span>
+                                        {% else %}
+                                            <span class="badge bg-secondary">Static</span>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <p class="text-muted">No IP addresses found</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Interfaces -->
+    <div class="col-md-6">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="card-title mb-0">Interfaces ({{ info.interfaces|length }})</h5>
+            </div>
+            <div class="card-body">
+                {% if info.interfaces %}
+                    <div class="table-responsive">
+                        <table class="table table-striped table-sm">
+                            <thead>
+                                <tr>
+                                    <th>Name</th>
+                                    <th>Type</th>
+                                    <th>Status</th>
+                                    <th>MTU</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for interface in info.interfaces %}
+                                <tr>
+                                    <td>{{ interface.name }}</td>
+                                    <td><span class="badge bg-secondary">{{ interface.type }}</span></td>
+                                    <td>
+                                        {% if interface.running == 'true' %}
+                                            <span class="badge bg-success">Up</span>
+                                        {% else %}
+                                            <span class="badge bg-danger">Down</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>{{ interface.mtu if interface.mtu else 'N/A' }}</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <p class="text-muted">No interfaces found</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Internal IP Addresses -->
+<div class="row">
+    <!-- DHCP Leases -->
+    <div class="col-md-12">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="card-title mb-0">Internal IP Addresses ({{ info.dhcp_leases|length }})</h5>
+            </div>
+            <div class="card-body">
+                {% if info.dhcp_leases %}
+                    <div class="table-responsive">
+                        <table class="table table-striped table-sm">
+                            <thead>
+                                <tr>
+                                    <th>IP Address</th>
+                                    <th>MAC Address</th>
+                                    <th>Hostname</th>
+                                    <th>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for lease in info.dhcp_leases %}
+                                <tr>
+                                    <td><code>{{ lease.address }}</code></td>
+                                    <td><code>{{ lease.mac_address }}</code></td>
+                                    <td>{{ lease.host_name if lease.host_name else 'N/A' }}</td>
+                                    <td>
+                                        {% if lease.status == 'bound' %}
+                                            <span class="badge bg-success">Bound</span>
+                                        {% elif lease.status == 'waiting' %}
+                                            <span class="badge bg-warning">Waiting</span>
+                                        {% else %}
+                                            <span class="badge bg-secondary">{{ lease.status }}</span>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <p class="text-muted">No DHCP leases found</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Per-IP Bandwidth Monitoring -->
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="card-title mb-0">Per-IP Bandwidth Usage (Internal IPs Only)</h5>
+        <div class="dropdown">
+            <button class="btn btn-outline-secondary dropdown-toggle" type="button" id="timePeriodDropdown" data-bs-toggle="dropdown" aria-expanded="false">
+                {% for period_id, period_label in time_periods %}
+                    {% if period_id == selected_period %}
+                        {{ period_label }}
+                    {% endif %}
+                {% endfor %}
+            </button>
+            <ul class="dropdown-menu" aria-labelledby="timePeriodDropdown">
+                {% for period_id, period_label in time_periods %}
+                <li>
+                    <a class="dropdown-item {% if period_id == selected_period %}active{% endif %}" 
+                       href="{{ url_for('monitor_router', router_id=router.id, period=period_id) }}">
+                        {{ period_label }}
+                    </a>
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+    <div class="card-body">
+        {% if bandwidth_stats and selected_period in bandwidth_stats %}
+            {% set period_data = bandwidth_stats[selected_period] %}
+            {% if period_data %}
+                <div class="table-responsive">
+                    <table class="table table-striped table-sm">
+                        <thead>
+                            <tr>
+                                <th>IP Address</th>
+                                <th>Upload (MB)</th>
+                                <th>Download (MB)</th>
+                                <th>Total (MB)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for ip_address, stats in period_data.items() %}
+                            <tr>
+                                <td><code>{{ ip_address }}</code></td>
+                                <td>
+                                    {% if stats.tx_mb > 0 %}
+                                        <span class="badge bg-warning">{{ "%.2f"|format(stats.tx_mb) }} MB</span>
+                                    {% else %}
+                                        <span class="text-muted">0 MB</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if stats.rx_mb > 0 %}
+                                        <span class="badge bg-info">{{ "%.2f"|format(stats.rx_mb) }} MB</span>
+                                    {% else %}
+                                        <span class="text-muted">0 MB</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% set total_mb = stats.rx_mb + stats.tx_mb %}
+                                    {% if total_mb > 0 %}
+                                        <strong>{{ "%.2f"|format(total_mb) }} MB</strong>
+                                    {% else %}
+                                        <span class="text-muted">0 MB</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            {% else %}
+                <p class="text-muted">No bandwidth data available for the selected time period.</p>
+            {% endif %}
+            <div class="alert alert-info mt-3">
+                <small>
+                    <strong>Note:</strong> Per-IP bandwidth data is collected automatically every minute for internal IPs only.
+                    Shows data volume in megabytes for internal IP addresses within your MikroTik network.
+                    Use the dropdown to change the time period view.
+                </small>
+            </div>
+        {% else %}
+            <p class="text-muted">No per-IP bandwidth data available yet. Data is collected automatically every minute.</p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

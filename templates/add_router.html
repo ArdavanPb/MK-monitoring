@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h4 class="card-title mb-0">Add New Router</h4>
+            </div>
+            <div class="card-body">
+                <form method="POST">
+                    <div class="mb-3">
+                        <label for="name" class="form-label">Router Display Name</label>
+                        <input type="text" class="form-control" id="name" name="name" required 
+                               placeholder="e.g., Office Router">
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="host" class="form-label">Router IP/Hostname</label>
+                        <input type="text" class="form-control" id="host" name="host" required 
+                               placeholder="e.g., 192.168.88.1 or router.example.com">
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="port" class="form-label">API Port</label>
+                        <input type="number" class="form-control" id="port" name="port" value="8728" 
+                               placeholder="Default: 8728">
+                        <div class="form-text">Default MikroTik API port is 8728</div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="username" class="form-label">API Username</label>
+                        <input type="text" class="form-control" id="username" name="username" required 
+                               placeholder="e.g., admin">
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="password" class="form-label">API Password</label>
+                        <input type="password" class="form-control" id="password" name="password" required 
+                               placeholder="Router API password">
+                    </div>
+                    
+                    <div class="alert alert-info">
+                        <small>
+                            <strong>Connection Requirements:</strong>
+                            <ul class="mb-0 mt-1">
+                                <li>API service must be enabled on the router</li>
+                                <li>User must have API permissions</li>
+                                <li>Default API port is 8728</li>
+                                <li>Network connectivity between application and router</li>
+                            </ul>
+                            <a href="#" data-bs-toggle="modal" data-bs-target="#troubleshootingModal">Having connection issues?</a>
+                        </small>
+                    </div>
+                    
+                    <div class="d-flex justify-content-between">
+                        <a href="{{ url_for('index') }}" class="btn btn-secondary">Cancel</a>
+                        <button type="submit" class="btn btn-primary">Test Connection & Add Router</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

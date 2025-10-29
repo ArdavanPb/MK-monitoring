@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1>Router Dashboard</h1>
+    <a href="{{ url_for('add_router') }}" class="btn btn-primary">Add New Router</a>
+</div>
+
+{% if routers %}
+    <div class="row">
+        {% for router in routers %}
+        <div class="col-md-6 col-lg-4">
+            <div class="card router-card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="card-title mb-0">{{ router.name }}</h5>
+                    <span class="badge bg-secondary">{{ router.host }}:{{ router.port }}</span>
+                </div>
+                <div class="card-body">
+                    {% if router.info.error %}
+                        <div class="alert alert-danger">
+                            <strong>Error:</strong> {{ router.info.error }}
+                        </div>
+                    {% else %}
+                        <div class="mb-2">
+                            <strong>Router Name:</strong> {{ router.info.name }}
+                        </div>
+                        <div class="mb-2">
+                            <strong>Uptime:</strong> 
+                            <span class="badge bg-info status-badge">{{ router.info.uptime }}</span>
+                        </div>
+                        <div class="mb-2">
+                            <strong>Memory Usage:</strong>
+                            <div class="progress mb-1">
+                                {% if router.info.total_memory != 'N/A' and router.info.used_memory != 'N/A' %}
+                                    {% set total_mem = router.info.total_memory|int / 1024 / 1024 %}
+                                    {% set used_mem = router.info.used_memory|int / 1024 / 1024 %}
+                                    {% set usage_percent = (used_mem / total_mem * 100)|round(1) %}
+                                    <div class="progress-bar bg-{{ 'success' if usage_percent < 70 else 'warning' if usage_percent < 85 else 'danger' }}" 
+                                         role="progressbar" 
+                                         style="width: {{ usage_percent }}%" 
+                                         aria-valuenow="{{ usage_percent }}" 
+                                         aria-valuemin="0" 
+                                         aria-valuemax="100">
+                                        {{ usage_percent }}%
+                                    </div>
+                                {% else %}
+                                    <div class="progress-bar bg-secondary" style="width: 100%">N/A</div>
+                                {% endif %}
+                            </div>
+                            <small class="text-muted">
+                                {% if router.info.used_memory != 'N/A' %}
+                                    {{ (router.info.used_memory|int / 1024 / 1024)|round(1) }}MB / 
+                                {% endif %}
+                                {% if router.info.total_memory != 'N/A' %}
+                                    {{ (router.info.total_memory|int / 1024 / 1024)|round(1) }}MB
+                                {% else %}
+                                    N/A
+                                {% endif %}
+                            </small>
+                        </div>
+                        <div class="mb-2">
+                            <strong>CPU Load:</strong> 
+                            <span class="badge bg-{{ 'success' if router.info.cpu_load|float < 50 else 'warning' if router.info.cpu_load|float < 80 else 'danger' }} status-badge">
+                                {{ router.info.cpu_load }}%
+                            </span>
+                        </div>
+                        <div class="mb-2">
+                            <strong>Firmware:</strong> {{ router.info.version }}
+                        </div>
+                    {% endif %}
+                </div>
+                <div class="card-footer">
+                    <div class="d-flex justify-content-between">
+                        <a href="{{ url_for('monitor_router', router_id=router.id) }}" class="btn btn-sm btn-outline-success">Monitor</a>
+                        <div>
+                            <a href="{{ url_for('refresh_router', router_id=router.id) }}" class="btn btn-sm btn-outline-primary">Refresh</a>
+                            <a href="{{ url_for('delete_router', router_id=router.id) }}" class="btn btn-sm btn-outline-danger" 
+                               onclick="return confirm('Are you sure you want to delete this router?')">Delete</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+{% else %}
+    <div class="text-center py-5">
+        <h3>No routers configured</h3>
+        <p class="text-muted">Add your first MikroTik router to get started.</p>
+        <a href="{{ url_for('add_router') }}" class="btn btn-primary">Add Router</a>
+    </div>
+{% endif %}
+{% endblock %}

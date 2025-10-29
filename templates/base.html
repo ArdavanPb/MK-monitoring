@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MikroTik Router Monitor</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .router-card {
+            margin-bottom: 20px;
+        }
+        .status-badge {
+            font-size: 0.8rem;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="{{ url_for('index') }}">MikroTik Monitor</a>
+            <div class="navbar-nav">
+                <a class="nav-link" href="{{ url_for('index') }}">Dashboard</a>
+                <a class="nav-link" href="{{ url_for('add_router') }}">Add Router</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container mt-4">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ 'danger' if category == 'error' else 'success' }} alert-dismissible fade show" role="alert">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        {% block content %}{% endblock %}
+    </div>
+
+    <!-- Troubleshooting Modal -->
+    <div class="modal fade" id="troubleshootingModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Connection Troubleshooting</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <h6>Common Issues:</h6>
+                    <ul>
+                        <li><strong>Timeout:</strong> Network connectivity issue or wrong IP</li>
+                        <li><strong>Connection refused:</strong> API service not enabled on router</li>
+                        <li><strong>Authentication failed:</strong> Wrong username/password or username format issue</li>
+                    </ul>
+                    
+                    <h6>Quick Checks:</h6>
+                    <ol>
+                        <li>Verify router IP address is correct</li>
+                        <li>Ensure API service is enabled on router</li>
+                        <li>Check user has API permissions</li>
+                        <li>Test network connectivity (ping router IP)</li>
+                        <li>Verify port 8728 is accessible</li>
+                    </ol>
+                    
+                    <h6>Router Configuration:</h6>
+                    <pre class="bg-light p-2">
+# Enable API service
+/ip service set api disabled=no
+
+# Create API user (if needed)
+/user add name=api-user password=your-password group=full
+                    </pre>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
