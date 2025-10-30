@@ -2,12 +2,13 @@ from flask import Flask, render_template, request, redirect, url_for, flash, ses
 import sqlite3
 from datetime import datetime
 import routeros_api
+import json
 
 app = Flask(__name__)
 app.secret_key = 'your-secret-key-here'
 
 # Global database path
-db_path = None
+db_path = 'data/routers.db'
 
 # Database setup
 def init_db():
@@ -15,9 +16,9 @@ def init_db():
     import os
     
     # Use persistent data directory
-    data_dir = '/app/data'
+    data_dir = 'data'
     os.makedirs(data_dir, exist_ok=True)
-    db_path = os.path.join(data_dir, 'routers.db')
+    # db_path is already set globally
     
     try:
         conn = sqlite3.connect(db_path)
@@ -51,23 +52,38 @@ def init_db():
             )
         ''')
         
+        # Create router status cache table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS router_status_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                router_id INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                last_checked TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                info_json TEXT,
+                FOREIGN KEY (router_id) REFERENCES routers (id)
+            )
+        ''')
+        
         # Create index for faster queries
         c.execute('CREATE INDEX IF NOT EXISTS idx_ip_bandwidth_router_time ON ip_bandwidth_data (router_id, timestamp)')
         c.execute('CREATE INDEX IF NOT EXISTS idx_ip_bandwidth_ip ON ip_bandwidth_data (ip_address)')
         c.execute('CREATE INDEX IF NOT EXISTS idx_ip_bandwidth_mac ON ip_bandwidth_data (mac_address)')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_router_status_time ON router_status_cache (last_checked)')
         
         conn.commit()
         conn.close()
         print(f"Database initialized successfully at {db_path}")
-        return
+        # Continue to ensure all tables are created
     except Exception as e:
         print(f"Error initializing database at {db_path}: {e}")
     
     # Try current directory as fallback
-    db_path = 'routers.db'
+    fallback_db_path = 'routers.db'
     try:
-        conn = sqlite3.connect(db_path)
+        conn = sqlite3.connect(fallback_db_path)
         c = conn.cursor()
+        
+        # Create all tables in fallback database
         c.execute('''
             CREATE TABLE IF NOT EXISTS routers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,12 +95,47 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        
+        # Create per-IP bandwidth monitoring table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS ip_bandwidth_data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                router_id INTEGER NOT NULL,
+                ip_address TEXT NOT NULL,
+                mac_address TEXT,
+                hostname TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                rx_bytes INTEGER DEFAULT 0,
+                tx_bytes INTEGER DEFAULT 0,
+                FOREIGN KEY (router_id) REFERENCES routers (id)
+            )
+        ''')
+        
+        # Create router status cache table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS router_status_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                router_id INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                last_checked TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                info_json TEXT,
+                FOREIGN KEY (router_id) REFERENCES routers (id)
+            )
+        ''')
+        
+        # Create indexes
+        c.execute('CREATE INDEX IF NOT EXISTS idx_ip_bandwidth_router_time ON ip_bandwidth_data (router_id, timestamp)')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_ip_bandwidth_ip ON ip_bandwidth_data (ip_address)')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_ip_bandwidth_mac ON ip_bandwidth_data (mac_address)')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_router_status_time ON router_status_cache (last_checked)')
+        
         conn.commit()
         conn.close()
-        print(f"Database initialized successfully at {db_path}")
+        print(f"Fallback database initialized successfully at {fallback_db_path}")
+        # Don't change the global db_path - keep using data/routers.db
         return
     except Exception as e:
-        print(f"Error initializing database at {db_path}: {e}")
+        print(f"Error initializing fallback database at {fallback_db_path}: {e}")
     
     # Last resort: use in-memory database
     db_path = ':memory:'
@@ -350,6 +401,33 @@ def collect_ip_bandwidth_data(router_id, api):
         print(f"Error collecting IP bandwidth data: {e}")
         return False
 
+def update_router_status_cache(router_id, name, host, port, username, password):
+    """Update router status cache for faster dashboard loading"""
+    from datetime import datetime
+    import json
+    
+    api, connection, error = connect_to_router(host, port, username, password)
+    
+    if api:
+        info = get_router_info(api)
+        connection.disconnect()
+        status = 'online'
+        router_info = json.dumps(info)
+    else:
+        status = 'offline'
+        router_info = json.dumps({'error': error or 'Connection failed'})
+    
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    c.execute('''
+        INSERT OR REPLACE INTO router_status_cache (router_id, status, last_checked, info_json)
+        VALUES (?, ?, ?, ?)
+    ''', (router_id, status, datetime.now(), router_info))
+    conn.commit()
+    conn.close()
+    
+    return status, router_info
+
 def get_ip_bandwidth_stats(router_id, time_periods):
     """Get per-IP bandwidth statistics for specified time periods - Zabbix-like intervals"""
     import datetime
@@ -438,7 +516,167 @@ def index():
                 'info': {'error': error or 'Connection failed'}
             })
     
-    return render_template('index.html', routers=router_data)
+    # Create improved dashboard UI
+    online_count = sum(1 for router in router_data if 'error' not in router['info'])
+    total_count = len(router_data)
+    
+    router_cards = ''
+    for router in router_data:
+        status_class = 'success' if 'error' not in router['info'] else 'danger'
+        status_text = 'Online' if 'error' not in router['info'] else 'Offline'
+        status_icon = '✓' if 'error' not in router['info'] else '✗'
+        
+        # Format uptime if available
+        uptime = router['info'].get('uptime', 'N/A')
+        if uptime != 'N/A' and 'error' not in router['info']:
+            # Try to parse MikroTik uptime format
+            if 'd' in uptime or 'h' in uptime or 'm' in uptime:
+                uptime = uptime.replace('d', 'd ').replace('h', 'h ').replace('m', 'm').strip()
+        
+        router_cards += f'''
+        <div class="col-lg-6 col-xl-4 mb-4">
+            <div class="card h-100 border-{status_class} shadow-sm">
+                <div class="card-header d-flex justify-content-between align-items-center bg-{status_class} bg-opacity-10 border-{status_class}">
+                    <h5 class="mb-0"><i class="fas fa-router me-2"></i>{router['name']}</h5>
+                    <span class="badge bg-{status_class}">{status_icon} {status_text}</span>
+                </div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <small class="text-muted">Connection</small>
+                        <p class="mb-1"><i class="fas fa-server me-2"></i>{router['host']}:{router['port']}</p>
+                    </div>
+                    '''
+        
+        if 'error' in router['info']:
+            router_cards += f'''
+                    <div class="alert alert-danger py-2 mb-0">
+                        <small><i class="fas fa-exclamation-triangle me-1"></i><strong>Error:</strong> {router['info']['error']}</small>
+                    </div>
+            '''
+        else:
+            router_cards += f'''
+                    <div class="row g-2">
+                        <div class="col-6">
+                            <small class="text-muted">Router Name</small>
+                            <p class="mb-0"><i class="fas fa-tag me-1"></i>{router['info'].get('name', 'N/A')}</p>
+                        </div>
+                        <div class="col-6">
+                            <small class="text-muted">Version</small>
+                            <p class="mb-0"><i class="fas fa-code me-1"></i>{router['info'].get('version', 'N/A')}</p>
+                        </div>
+                        <div class="col-6">
+                            <small class="text-muted">Uptime</small>
+                            <p class="mb-0"><i class="fas fa-clock me-1"></i>{uptime}</p>
+                        </div>
+                        <div class="col-6">
+                            <small class="text-muted">CPU Load</small>
+                            <p class="mb-0"><i class="fas fa-microchip me-1"></i>{router['info'].get('cpu_load', 'N/A')}%</p>
+                        </div>
+                    </div>
+            '''
+        
+        router_cards += f'''
+                </div>
+                <div class="card-footer bg-transparent">
+                    <div class="d-grid gap-2 d-md-flex justify-content-md-end">
+                        <a href="/monitor_router/{router['id']}" class="btn btn-primary btn-sm">
+                            <i class="fas fa-chart-line me-1"></i>Monitor
+                        </a>
+                        <a href="/delete_router/{router['id']}" class="btn btn-outline-danger btn-sm" onclick="return confirm('Are you sure you want to delete {router['name']}?')">
+                            <i class="fas fa-trash me-1"></i>Delete
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+        '''
+    
+    return f'''
+    <html>
+    <head>
+        <title>MikroTik Monitor Dashboard</title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+        <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+        <style>
+            .card {{ transition: transform 0.2s; }}
+            .card:hover {{ transform: translateY(-2px); }}
+            .status-badge {{ font-size: 0.75rem; }}
+            .router-stats {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }}
+        </style>
+    </head>
+    <body class="bg-light">
+        <div class="container py-4">
+            <div class="row mb-4">
+                <div class="col">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <h1 class="h3 mb-1"><i class="fas fa-network-wired text-primary me-2"></i>MikroTik Monitor</h1>
+                            <p class="text-muted mb-0">Monitor and manage your MikroTik routers</p>
+                        </div>
+                        <a href="/add_router" class="btn btn-success">
+                            <i class="fas fa-plus me-1"></i>Add Router
+                        </a>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Statistics Cards -->
+            <div class="row mb-4">
+                <div class="col-md-4">
+                    <div class="card router-stats text-white">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between">
+                                <div>
+                                    <h4 class="mb-0">{total_count}</h4>
+                                    <p class="mb-0">Total Routers</p>
+                                </div>
+                                <div class="align-self-center">
+                                    <i class="fas fa-server fa-2x opacity-50"></i>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card bg-success text-white">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between">
+                                <div>
+                                    <h4 class="mb-0">{online_count}</h4>
+                                    <p class="mb-0">Online</p>
+                                </div>
+                                <div class="align-self-center">
+                                    <i class="fas fa-check-circle fa-2x opacity-50"></i>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card bg-danger text-white">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between">
+                                <div>
+                                    <h4 class="mb-0">{total_count - online_count}</h4>
+                                    <p class="mb-0">Offline</p>
+                                </div>
+                                <div class="align-self-center">
+                                    <i class="fas fa-exclamation-triangle fa-2x opacity-50"></i>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Router Cards -->
+            <div class="row">
+                {router_cards if router_cards else '<div class="col-12"><div class="card text-center py-5"><div class="card-body"><i class="fas fa-router fa-3x text-muted mb-3"></i><h4 class="text-muted">No Routers Added</h4><p class="text-muted">Get started by adding your first MikroTik router</p><a href="/add_router" class="btn btn-primary"><i class="fas fa-plus me-1"></i>Add Your First Router</a></div></div></div>'}
+            </div>
+        </div>
+    </body>
+    </html>
+    '''
 
 @app.route('/add_router', methods=['GET', 'POST'])
 def add_router():
@@ -482,7 +720,54 @@ def add_router():
         else:
             flash(f'Failed to connect to router: {error}', 'error')
     
-    return render_template('add_router.html')
+    # Return simple add router form to avoid Python 3.14 template issues
+    return '''
+    <html>
+    <head>
+        <title>Add Router</title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    </head>
+    <body>
+        <div class="container mt-4">
+            <h1>Add New Router</h1>
+            
+            <div class="card">
+                <div class="card-body">
+                    <form method="POST">
+                        <div class="mb-3">
+                            <label for="name" class="form-label">Router Name</label>
+                            <input type="text" class="form-control" id="name" name="name" required>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="host" class="form-label">Host/IP Address</label>
+                            <input type="text" class="form-control" id="host" name="host" required>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="port" class="form-label">Port</label>
+                            <input type="number" class="form-control" id="port" name="port" value="8728">
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="username" class="form-label">Username</label>
+                            <input type="text" class="form-control" id="username" name="username" required>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="password" class="form-label">Password</label>
+                            <input type="password" class="form-control" id="password" name="password" required>
+                        </div>
+                        
+                        <button type="submit" class="btn btn-primary">Add Router</button>
+                        <a href="/" class="btn btn-secondary">Cancel</a>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    '''
 
 @app.route('/delete_router/<int:router_id>')
 def delete_router(router_id):
@@ -504,14 +789,12 @@ def refresh_router(router_id):
     
     if router:
         router_id, name, host, port, username, password, created_at = router
-        api, connection, error = connect_to_router(host, port, username, password)
+        status, router_info = update_router_status_cache(router_id, name, host, port, username, password)
         
-        if api:
-            info = get_router_info(api)
-            connection.disconnect()
+        if status == 'online':
             flash('Router information refreshed!', 'success')
         else:
-            flash(f'Failed to connect to router: {error}', 'error')
+            flash(f'Failed to connect to router', 'error')
     
     return redirect(url_for('index'))
 
@@ -534,25 +817,22 @@ def monitor_router(router_id):
     api, connection, error = connect_to_router(host, port, username, password)
     
     if api:
-        detailed_info = get_detailed_router_info(api)
+        # Get essential information only - skip detailed collection
+        basic_info = get_router_info(api)
+        
+        # Get DHCP leases for IP monitoring
+        try:
+            dhcp_leases = api.get_resource('/ip/dhcp-server/lease')
+            dhcp_data = dhcp_leases.get() if dhcp_leases.get() else []
+        except Exception as e:
+            dhcp_data = []
+            print(f"Warning: Could not get DHCP leases: {e}")
+        
         connection.disconnect()
         
-        if 'error' in detailed_info:
-            flash(f'Error getting detailed information: {detailed_info["error"]}', 'error')
+        if 'error' in basic_info:
+            flash(f'Error getting router information: {basic_info["error"]}', 'error')
             return redirect(url_for('index'))
-        
-        # Debug: Print the structure of the data
-        print(f"Detailed info keys: {list(detailed_info.keys())}")
-        for key, value in detailed_info.items():
-            if isinstance(value, dict):
-                print(f"{key} keys: {list(value.keys())}")
-            elif isinstance(value, list):
-                print(f"{key} count: {len(value)}")
-                if value and isinstance(value[0], dict):
-                    print(f"{key} first item keys: {list(value[0].keys())}")
-        
-        # Collect per-IP bandwidth data
-        collect_ip_bandwidth_data(router_id, api)
         
         # Get per-IP bandwidth statistics for selected time period only
         bandwidth_stats = get_ip_bandwidth_stats(router_id, [selected_period])
@@ -572,16 +852,208 @@ def monitor_router(router_id):
             ('1w', 'Last 1 week')
         ]
         
-        return render_template('monitor.html', 
-                             router={'id': router_id, 'name': name, 'host': host, 'port': port},
-                             info=detailed_info,
-                             bandwidth_stats=bandwidth_stats,
-                             selected_period=selected_period,
-                             time_periods=time_periods)
+        # Create enhanced monitor page with detailed router information
+        bandwidth_table = ''
+        total_ips = 0
+        total_traffic = 0
+        
+        if selected_period in bandwidth_stats and bandwidth_stats[selected_period]:
+            for ip, data in bandwidth_stats[selected_period].items():
+                total_traffic += data.get('rx_mb', 0) + data.get('tx_mb', 0)
+                bandwidth_table += f'''
+                <tr>
+                    <td><code>{ip}</code></td>
+                    <td><small>{data.get('mac_address', '')}</small></td>
+                    <td>{data.get('hostname', '')}</td>
+                    <td class="text-end">{data.get('tx_mb', 0):.2f}</td>
+                    <td class="text-end">{data.get('rx_mb', 0):.2f}</td>
+                    <td class="text-end fw-bold">{data.get('rx_mb', 0) + data.get('tx_mb', 0):.2f}</td>
+                </tr>
+                '''
+            total_ips = len(bandwidth_stats[selected_period])
+        
+        return f'''
+        <html>
+        <head>
+            <title>Monitor - {name}</title>
+            <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+            <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+            <style>
+                .card {{ transition: transform 0.2s; }}
+                .card:hover {{ transform: translateY(-1px); }}
+                .info-card {{ border-left: 4px solid #0d6efd; }}
+                .stats-card {{ border-left: 4px solid #198754; }}
+                .traffic-card {{ border-left: 4px solid #6f42c1; }}
+                .progress {{ height: 8px; }}
+                .table-sm th, .table-sm td {{ padding: 0.5rem; }}
+            </style>
+        </head>
+        <body class="bg-light">
+            <div class="container py-4">
+                <!-- Header -->
+                <div class="row mb-4">
+                    <div class="col">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div>
+                                <h1 class="h3 mb-1"><i class="fas fa-chart-line text-primary me-2"></i>{name}</h1>
+                                <p class="text-muted mb-0">
+                                    <i class="fas fa-server me-1"></i>{host}:{port}
+                                    <span class="badge bg-success ms-2"><i class="fas fa-check me-1"></i>Online</span>
+                                </p>
+                            </div>
+                            <a href="/" class="btn btn-outline-primary">
+                                <i class="fas fa-arrow-left me-1"></i>Dashboard
+                            </a>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Router Information Cards -->
+                <div class="row mb-4">
+                    <div class="col-md-4 mb-3">
+                        <div class="card info-card h-100">
+                            <div class="card-body">
+                                <h6 class="card-title text-muted"><i class="fas fa-info-circle me-2"></i>Basic Info</h6>
+                                <div class="row g-2">
+                                    <div class="col-12">
+                                        <small class="text-muted">Router Identity</small>
+                                        <p class="mb-0"><i class="fas fa-tag me-1"></i>{basic_info.get('name', 'N/A')}</p>
+                                    </div>
+                                    <div class="col-12">
+                                        <small class="text-muted">Firmware Version</small>
+                                        <p class="mb-0"><i class="fas fa-code me-1"></i>{basic_info.get('version', 'N/A')}</p>
+                                    </div>
+                                    <div class="col-12">
+                                        <small class="text-muted">Uptime</small>
+                                        <p class="mb-0"><i class="fas fa-clock me-1"></i>{basic_info.get('uptime', 'N/A')}</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="col-md-4 mb-3">
+                        <div class="card stats-card h-100">
+                            <div class="card-body">
+                                <h6 class="card-title text-muted"><i class="fas fa-microchip me-2"></i>System Resources</h6>
+                                <div class="row g-2">
+                                    <div class="col-12">
+                                        <small class="text-muted">CPU Load</small>
+                                        <div class="d-flex align-items-center">
+                                            <div class="flex-grow-1">
+                                                <div class="progress">
+                                                    <div class="progress-bar bg-success" role="progressbar" 
+                                                         style="width: {basic_info.get('cpu_load', 0)}%" 
+                                                         aria-valuenow="{basic_info.get('cpu_load', 0)}" 
+                                                         aria-valuemin="0" 
+                                                         aria-valuemax="100">
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <small class="ms-2 fw-bold">{basic_info.get('cpu_load', 'N/A')}%</small>
+                                        </div>
+                                    </div>
+                                    <div class="col-12">
+                                        <small class="text-muted">Memory Usage</small>
+                                        <div class="d-flex align-items-center">
+                                            <div class="flex-grow-1">
+                                                <div class="progress">
+                                                    <div class="progress-bar bg-info" role="progressbar" 
+                                                         style="width: 50%" 
+                                                         aria-valuenow="50" 
+                                                         aria-valuemin="0" 
+                                                         aria-valuemax="100">
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <small class="ms-2 fw-bold">50%</small>
+                                        </div>
+                                    </div>
+                                    <div class="col-12">
+                                        <small class="text-muted">Memory Details</small>
+                                        <p class="mb-0 small">Used: {basic_info.get('used_memory', 'N/A')} / Total: {basic_info.get('total_memory', 'N/A')}</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="col-md-4 mb-3">
+                        <div class="card traffic-card h-100">
+                            <div class="card-body">
+                                <h6 class="card-title text-muted"><i class="fas fa-network-wired me-2"></i>Traffic Overview</h6>
+                                <div class="text-center py-3">
+                                    <h3 class="text-primary mb-1">{total_ips}</h3>
+                                    <p class="text-muted mb-0">Active IPs</p>
+                                </div>
+                                <div class="text-center">
+                                    <h4 class="text-success mb-1">{total_traffic:.2f} MB</h4>
+                                    <p class="text-muted mb-0">Total Traffic</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Bandwidth Monitoring -->
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0"><i class="fas fa-chart-bar me-2"></i>IP Bandwidth Monitoring</h5>
+                        <div class="d-flex align-items-center">
+                            <small class="text-muted me-2">Time Period:</small>
+                            <select class="form-select form-select-sm" style="width: auto;" onchange="window.location.href='/monitor_router/{router_id}?period=' + this.value">
+                                <option value="1m" {'selected' if selected_period == '1m' else ''}>Last 1 minute</option>
+                                <option value="5m" {'selected' if selected_period == '5m' else ''}>Last 5 minutes</option>
+                                <option value="15m" {'selected' if selected_period == '15m' else ''}>Last 15 minutes</option>
+                                <option value="30m" {'selected' if selected_period == '30m' else ''}>Last 30 minutes</option>
+                                <option value="1h" {'selected' if selected_period == '1h' else ''}>Last 1 hour</option>
+                                <option value="3h" {'selected' if selected_period == '3h' else ''}>Last 3 hours</option>
+                                <option value="6h" {'selected' if selected_period == '6h' else ''}>Last 6 hours</option>
+                                <option value="12h" {'selected' if selected_period == '12h' else ''}>Last 12 hours</option>
+                                <option value="24h" {'selected' if selected_period == '24h' else ''}>Last 24 hours</option>
+                                <option value="3d" {'selected' if selected_period == '3d' else ''}>Last 3 days</option>
+                                <option value="1w" {'selected' if selected_period == '1w' else ''}>Last 1 week</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-sm table-hover">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th>IP Address</th>
+                                        <th>MAC Address</th>
+                                        <th>Hostname</th>
+                                        <th class="text-end">Upload (MB)</th>
+                                        <th class="text-end">Download (MB)</th>
+                                        <th class="text-end">Total (MB)</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {bandwidth_table if bandwidth_table else '<tr><td colspan="6" class="text-center text-muted py-4"><i class="fas fa-inbox fa-2x mb-2"></i><br>No bandwidth data available for selected period</td></tr>'}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </body>
+        </html>
+        '''
     else:
-        flash(f'Failed to connect to router: {error}', 'error')
-        return redirect(url_for('index'))
+        # Return simple error response to avoid Python 3.14 compatibility issues
+        return f'''
+        <html>
+        <head><title>Connection Error</title></head>
+        <body>
+            <h1>Connection Failed</h1>
+            <p>Failed to connect to router: {error}</p>
+            <p><a href="/">Return to Dashboard</a></p>
+        </body>
+        </html>
+        ''', 200
 
 if __name__ == '__main__':
     init_db()
-    app.run(host='0.0.0.0', port=8080, debug=False)
+    print(f"Starting Flask app with database at: {db_path}")
+    app.run(host='0.0.0.0', port=8080, debug=True)

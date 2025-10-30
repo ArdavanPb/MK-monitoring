@@ -10,7 +10,7 @@ import schedule
 import threading
 from datetime import datetime
 
-db_path = '/app/data/routers.db'
+db_path = 'data/routers.db'
 
 # Dictionary to store previous interface statistics for each router
 router_interface_stats = {}
@@ -24,14 +24,24 @@ def collect_all_routers_bandwidth():
         # Get all routers
         c.execute('SELECT id, name, host, port, username, password FROM routers')
         routers = c.fetchall()
+        
+        # Check which routers are online from cache
+        c.execute('SELECT router_id, status FROM router_status_cache')
+        router_status = {row[0]: row[1] for row in c.fetchall()}
         conn.close()
         
         for router in routers:
             router_id, name, host, port, username, password = router
+            
+            # Skip routers that are marked offline in cache
+            if router_id in router_status and router_status[router_id] == 'offline':
+                print(f"[{datetime.now()}] Skipping offline router: {name} ({host})")
+                continue
+            
             print(f"[{datetime.now()}] Collecting bandwidth data for {name} ({host})")
             
             try:
-                # Connect to router
+                # Connect to router with timeout
                 connection = routeros_api.RouterOsApiPool(
                     host,
                     port=port,
@@ -49,9 +59,25 @@ def collect_all_routers_bandwidth():
                 
             except Exception as e:
                 print(f"[{datetime.now()}] Error collecting data for {name}: {e}")
+                # Update cache to mark router as offline
+                update_router_status_offline(router_id)
         
     except Exception as e:
         print(f"[{datetime.now()}] Error in collector: {e}")
+
+def update_router_status_offline(router_id):
+    """Update router status to offline in cache"""
+    try:
+        conn = sqlite3.connect(db_path)
+        c = conn.cursor()
+        c.execute('''
+            INSERT OR REPLACE INTO router_status_cache (router_id, status, last_checked, router_info)
+            VALUES (?, ?, ?, ?)
+        ''', (router_id, 'offline', datetime.now(), '{"error": "Connection failed"}'))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Error updating router status cache: {e}")
 
 def collect_ip_bandwidth_data(router_id, api):
     """Collect per-IP bandwidth data using interface statistics with delta tracking"""
@@ -99,12 +125,13 @@ def collect_ip_bandwidth_data(router_id, api):
             'timestamp': datetime.now()
         }
         
-        # Get active IPs from connection tracking
+        # Get active IPs from connection tracking - limit to reasonable number
         active_ips = set()
         try:
             connections = api.get_resource('/ip/firewall/connection')
             connection_data = connections.get() if connections.get() else []
-            for conn in connection_data:
+            # Limit to first 100 connections to avoid excessive data
+            for conn in connection_data[:100]:
                 src_ip = conn.get('src-address')
                 dst_ip = conn.get('dst-address')
                 if src_ip:
@@ -116,7 +143,7 @@ def collect_ip_bandwidth_data(router_id, api):
         except Exception as e:
             print(f"Could not get connection data: {e}")
         
-        # Get internal IPs
+        # Get internal IPs - essential for monitoring
         internal_ips = set()
         try:
             dhcp_leases = api.get_resource('/ip/dhcp-server/lease')
@@ -127,15 +154,8 @@ def collect_ip_bandwidth_data(router_id, api):
         except Exception as e:
             print(f"Could not get DHCP leases: {e}")
         
-        try:
-            ip_addresses = api.get_resource('/ip/address')
-            addresses = ip_addresses.get() if ip_addresses.get() else []
-            for addr in addresses:
-                if addr.get('address'):
-                    ip = addr['address'].split('/')[0]
-                    internal_ips.add(ip)
-        except Exception as e:
-            print(f"Could not get IP addresses: {e}")
+        # Skip IP addresses collection to reduce API calls
+        # This is less critical for bandwidth monitoring
         
         # Get ARP table for MAC addresses and hostnames
         arp_table = {}
