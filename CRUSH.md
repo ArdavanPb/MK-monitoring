@@ -29,3 +29,4 @@
 - RouterOS API for MikroTik communication
 - Bootstrap-based web interface
 - Background data collection every minute
+- **Template-based architecture**: All HTML in templates, no embedded HTML in Python files

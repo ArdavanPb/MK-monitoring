@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header bg-danger text-white">
+                <h4 class="card-title mb-0"><i class="fas fa-exclamation-triangle me-2"></i>Connection Error</h4>
+            </div>
+            <div class="card-body text-center">
+                <div class="mb-4">
+                    <i class="fas fa-unlink fa-3x text-danger mb-3"></i>
+                    <h4>Failed to Connect to Router</h4>
+                    <p class="text-muted">{{ error }}</p>
+                </div>
+                
+                <div class="alert alert-warning">
+                    <h6>Common Issues:</h6>
+                    <ul class="mb-0 text-start">
+                        <li>Network connectivity problem</li>
+                        <li>Wrong IP address or port</li>
+                        <li>API service not enabled on router</li>
+                        <li>Incorrect username or password</li>
+                        <li>Firewall blocking the connection</li>
+                    </ul>
+                </div>
+                
+                <div class="d-grid gap-2">
+                    <a href="/" class="btn btn-primary">
+                        <i class="fas fa-arrow-left me-1"></i>Return to Dashboard
+                    </a>
+                    <a href="#" class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#troubleshootingModal">
+                        <i class="fas fa-wrench me-1"></i>View Troubleshooting Guide
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
