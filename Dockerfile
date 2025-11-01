@@ -14,7 +14,7 @@ RUN pip install --no-cache-dir schedule
 COPY . .
 
 # Make startup scripts executable
-RUN chmod +x start.sh && chmod +x docker-start.sh && chmod +x docker-simple.sh && chmod +x docker-troubleshoot.sh
+RUN chmod +x start.sh && chmod +x docker-start.sh
 
 # Create data directory with proper permissions
 RUN mkdir -p /app/data && chmod 755 /app/data
