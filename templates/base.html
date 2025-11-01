@@ -22,6 +22,50 @@
             color: #6c757d;
             font-style: italic;
         }
+        
+        /* Table scroll styling - limit to 10 rows */
+        .table-scroll {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        
+        .table-scroll table {
+            margin-bottom: 0;
+        }
+        
+        .table-scroll thead th {
+            position: sticky;
+            top: 0;
+            background-color: #f8f9fa;
+            z-index: 10;
+        }
+        
+        /* Ensure tables with many rows get scroll bars */
+        .table-responsive.table-scroll {
+            max-height: 400px;
+        }
+        
+        /* Specific styling for monitor page tables */
+        #internalIpTable tbody,
+        #bandwidthTable tbody {
+            max-height: 300px;
+            overflow-y: auto;
+            display: block;
+        }
+        
+        #internalIpTable thead,
+        #bandwidthTable thead {
+            display: table;
+            width: 100%;
+            table-layout: fixed;
+        }
+        
+        #internalIpTable tbody tr,
+        #bandwidthTable tbody tr {
+            display: table;
+            width: 100%;
+            table-layout: fixed;
+        }
     </style>
 </head>
 <body>
@@ -35,6 +79,7 @@
             <div class="navbar-nav">
                 {% if session.username %}
                     <span class="navbar-text me-3">Welcome, {{ session.username }}</span>
+                    <a class="nav-link" href="{{ url_for('change_password') }}">Change Password</a>
                     <a class="nav-link" href="{{ url_for('logout') }}">Logout</a>
                 {% else %}
                     <a class="nav-link" href="{{ url_for('login') }}">Login</a>
@@ -100,5 +145,6 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
 </body>
 </html>

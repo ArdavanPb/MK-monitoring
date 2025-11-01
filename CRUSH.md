@@ -26,6 +26,8 @@
 - **Clean IP display**: Shows only IP addresses without ports or MAC addresses
 - **Megabyte display**: Upload (MB), Download (MB), and Total (MB) columns
 - **Internal IP filtering**: Only shows data for DHCP leases and static IPs
+- **User password management**: Users can change their passwords via the web interface
+- **Table scroll limits**: Tables display maximum 10 rows with scroll bars for larger datasets
 
 ## Code Style
 - Flask application with SQLite database

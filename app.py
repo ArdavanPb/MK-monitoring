@@ -504,6 +504,49 @@ def logout():
     flash('You have been logged out', 'info')
     return redirect(url_for('login'))
 
+@app.route('/change_password', methods=['GET', 'POST'])
+@login_required
+def change_password():
+    if request.method == 'POST':
+        current_password = request.form['current_password']
+        new_password = request.form['new_password']
+        confirm_password = request.form['confirm_password']
+        
+        # Validate inputs
+        if not current_password or not new_password or not confirm_password:
+            flash('All fields are required', 'error')
+            return render_template('change_password.html')
+        
+        if new_password != confirm_password:
+            flash('New passwords do not match', 'error')
+            return render_template('change_password.html')
+        
+        if len(new_password) < 4:
+            flash('New password must be at least 4 characters long', 'error')
+            return render_template('change_password.html')
+        
+        # Verify current password
+        conn = sqlite3.connect(db_path)
+        c = conn.cursor()
+        c.execute('SELECT password_hash FROM users WHERE id = ?', (session['user_id'],))
+        user = c.fetchone()
+        
+        if not user or not verify_password(current_password, user[0]):
+            flash('Current password is incorrect', 'error')
+            conn.close()
+            return render_template('change_password.html')
+        
+        # Update password
+        new_password_hash = hash_password(new_password)
+        c.execute('UPDATE users SET password_hash = ? WHERE id = ?', (new_password_hash, session['user_id']))
+        conn.commit()
+        conn.close()
+        
+        flash('Password changed successfully!', 'success')
+        return redirect(url_for('index'))
+    
+    return render_template('change_password.html')
+
 @app.route('/')
 def index():
     # Redirect to login if not authenticated, otherwise show dashboard
@@ -711,6 +754,58 @@ def monitor_router(router_id):
                              time_periods=time_periods)
     else:
         return render_template('error.html', error=error), 200
+
+@app.route('/api/monitor/<int:router_id>')
+@login_required
+def api_monitor_router(router_id):
+    """API endpoint for refreshing router monitor data"""
+    # Get selected time period from query parameter, default to 1h
+    selected_period = request.args.get('period', '1h')
+    
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    c.execute('SELECT * FROM routers WHERE id = ?', (router_id,))
+    router = c.fetchone()
+    conn.close()
+    
+    if not router:
+        return jsonify({'success': False, 'error': 'Router not found'}), 404
+    
+    router_id, name, host, port, username, password, created_at = router
+    api, connection, error = connect_to_router(host, port, username, password)
+    
+    if api:
+        try:
+            # Get updated system information
+            system_info = get_router_info(api)
+            
+            # Get updated detailed information
+            detailed_info = get_detailed_router_info(api)
+            
+            # Get updated bandwidth statistics
+            bandwidth_stats = get_ip_bandwidth_stats(router_id, [selected_period])
+            
+            connection.disconnect()
+            
+            return jsonify({
+                'success': True,
+                'data': {
+                    'system_info': system_info,
+                    'tables': {
+                        'ip_addresses': detailed_info.get('ip_addresses', []),
+                        'dhcp_leases': detailed_info.get('dhcp_leases', []),
+                        'arp_table': detailed_info.get('arp_table', [])
+                    },
+                    'bandwidth_stats': bandwidth_stats
+                }
+            })
+            
+        except Exception as e:
+            if connection:
+                connection.disconnect()
+            return jsonify({'success': False, 'error': str(e)}), 500
+    else:
+        return jsonify({'success': False, 'error': error}), 500
 
 if __name__ == '__main__':
     init_db()

@@ -2,7 +2,10 @@
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
-    <h1>Router Monitoring: {{ router.name }}</h1>
+    <div>
+        <h1>Router Monitoring: {{ router.name }}</h1>
+        <small class="text-muted">Auto-refreshing every 60 seconds</small>
+    </div>
     <div>
         <a href="{{ url_for('index') }}" class="btn btn-secondary">Back to Dashboard</a>
         <a href="{{ url_for('refresh_router', router_id=router.id) }}" class="btn btn-outline-primary">Refresh</a>
@@ -219,7 +222,7 @@
             </div>
             <div class="card-body">
                 {% if info.ip_addresses %}
-                    <div class="table-responsive">
+                    <div class="table-responsive table-scroll">
                         <table class="table table-striped table-sm">
                             <thead>
                                 <tr>
@@ -296,7 +299,7 @@
             </div>
             <div class="card-body">
                 {% if info.interfaces %}
-                    <div class="table-responsive">
+                    <div class="table-responsive table-scroll">
                         <table class="table table-striped table-sm">
                             <thead>
                                 <tr>
@@ -366,7 +369,7 @@
             </div>
             <div class="card-body">
                 {% if info.dhcp_leases %}
-                    <div class="table-responsive">
+                    <div class="table-responsive table-scroll">
                         <table class="table table-striped table-sm" id="internalIpTable">
                             <thead>
                                 <tr>
@@ -441,7 +444,7 @@
         {% if bandwidth_stats and selected_period in bandwidth_stats %}
             {% set period_data = bandwidth_stats[selected_period] %}
             {% if period_data %}
-                <div class="table-responsive">
+                <div class="table-responsive table-scroll">
                     <table class="table table-striped table-sm" id="bandwidthTable">
                         <thead>
                             <tr>
@@ -717,6 +720,103 @@
         }
         
         console.log('All filter functionality initialized successfully!');
+        
+        // Simple auto-refresh functionality
+        let refreshInterval = null;
+        let refreshCount = 0;
+        const REFRESH_INTERVAL = 60000; // 60 seconds
+        
+        function startAutoRefresh() {
+            console.log('Starting auto-refresh every', REFRESH_INTERVAL / 1000, 'seconds');
+            
+            refreshInterval = setInterval(() => {
+                refreshData();
+            }, REFRESH_INTERVAL);
+            
+            // Show refresh indicator
+            updateRefreshIndicator();
+        }
+        
+        function stopAutoRefresh() {
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+                refreshInterval = null;
+                console.log('Auto-refresh stopped');
+            }
+        }
+        
+        function refreshData() {
+            console.log('Auto-refreshing page...');
+            refreshCount++;
+            
+            // Show loading indicator
+            showLoadingState(true);
+            
+            // Reload the page after a short delay to show loading state
+            setTimeout(() => {
+                // Get current URL and preserve time period
+                const currentUrl = window.location.href;
+                window.location.href = currentUrl;
+            }, 500);
+        }
+        
+        function showLoadingState(show) {
+            // Create or update loading overlay
+            let overlay = document.getElementById('refresh-overlay');
+            
+            if (show) {
+                if (!overlay) {
+                    overlay = document.createElement('div');
+                    overlay.id = 'refresh-overlay';
+                    overlay.className = 'position-fixed top-0 start-0 w-100 h-100 d-flex align-items-center justify-content-center';
+                    overlay.style.backgroundColor = 'rgba(255, 255, 255, 0.8)';
+                    overlay.style.zIndex = '9999';
+                    overlay.innerHTML = `
+                        <div class="text-center">
+                            <div class="spinner-border text-primary" role="status">
+                                <span class="visually-hidden">Refreshing...</span>
+                            </div>
+                            <div class="mt-2 text-muted">Refreshing data...</div>
+                        </div>
+                    `;
+                    document.body.appendChild(overlay);
+                }
+            } else {
+                if (overlay) {
+                    overlay.remove();
+                }
+            }
+        }
+        
+        function updateRefreshIndicator() {
+            // Create or update refresh indicator
+            let indicator = document.getElementById('refresh-indicator');
+            if (!indicator) {
+                indicator = document.createElement('div');
+                indicator.id = 'refresh-indicator';
+                indicator.className = 'position-fixed bottom-0 end-0 m-3 p-2 bg-dark text-white rounded small';
+                indicator.style.zIndex = '1050';
+                document.body.appendChild(indicator);
+            }
+            
+            const now = new Date().toLocaleTimeString();
+            indicator.innerHTML = `Auto-refresh: ${refreshCount} updates | Last: ${now}`;
+        }
+        
+        // Start auto-refresh when page loads
+        startAutoRefresh();
+        
+        // Stop auto-refresh when page is hidden (to save resources)
+        document.addEventListener('visibilitychange', function() {
+            if (document.hidden) {
+                stopAutoRefresh();
+            } else {
+                startAutoRefresh();
+            }
+        });
+        
+        // Clean up on page unload
+        window.addEventListener('beforeunload', stopAutoRefresh);
     });
 </script>
 {% endblock %}
