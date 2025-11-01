@@ -41,6 +41,18 @@
                         <th>Platform:</th>
                         <td>{{ info.resources.platform if info.resources.platform else 'N/A' }}</td>
                     </tr>
+                    {% if info.resources.build_time %}
+                    <tr>
+                        <th>Build Time:</th>
+                        <td>{{ info.resources.build_time }}</td>
+                    </tr>
+                    {% endif %}
+                    {% if info.resources.factory_software %}
+                    <tr>
+                        <th>Factory Software:</th>
+                        <td>{{ info.resources.factory_software }}</td>
+                    </tr>
+                    {% endif %}
                 </table>
             </div>
         </div>
@@ -68,6 +80,18 @@
                             {% endif %}
                         </td>
                     </tr>
+                    {% if info.resources.cpu_count %}
+                    <tr>
+                        <th>CPU Cores:</th>
+                        <td>{{ info.resources.cpu_count }}</td>
+                    </tr>
+                    {% endif %}
+                    {% if info.resources.cpu_frequency %}
+                    <tr>
+                        <th>CPU Frequency:</th>
+                        <td>{{ info.resources.cpu_frequency }} MHz</td>
+                    </tr>
+                    {% endif %}
                     <tr>
                         <th>Memory Usage:</th>
                         <td>

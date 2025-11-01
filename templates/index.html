@@ -34,17 +34,14 @@
                         <div class="mb-2">
                             <strong>Memory Usage:</strong>
                             <div class="progress mb-1">
-                                {% if router.info.total_memory != 'N/A' and router.info.used_memory != 'N/A' %}
-                                    {% set total_mem = router.info.total_memory|int / 1024 / 1024 %}
-                                    {% set used_mem = router.info.used_memory|int / 1024 / 1024 %}
-                                    {% set usage_percent = (used_mem / total_mem * 100)|round(1) %}
-                                    <div class="progress-bar bg-{{ 'success' if usage_percent < 70 else 'warning' if usage_percent < 85 else 'danger' }}" 
+                                {% if router.info.memory_usage_percent != 'N/A' %}
+                                    <div class="progress-bar bg-{{ 'success' if router.info.memory_usage_percent|float < 70 else 'warning' if router.info.memory_usage_percent|float < 85 else 'danger' }}" 
                                          role="progressbar" 
-                                         style="width: {{ usage_percent }}%" 
-                                         aria-valuenow="{{ usage_percent }}" 
+                                         style="width: {{ router.info.memory_usage_percent }}%" 
+                                         aria-valuenow="{{ router.info.memory_usage_percent }}" 
                                          aria-valuemin="0" 
                                          aria-valuemax="100">
-                                        {{ usage_percent }}%
+                                        {{ router.info.memory_usage_percent }}%
                                     </div>
                                 {% else %}
                                     <div class="progress-bar bg-secondary" style="width: 100%">N/A</div>
@@ -68,7 +65,24 @@
                             </span>
                         </div>
                         <div class="mb-2">
+                            <strong>CPU:</strong> 
+                            {% if router.info.cpu_count != 'N/A' %}
+                                {{ router.info.cpu_count }} core{% if router.info.cpu_count|int > 1 %}s{% endif %}
+                            {% else %}
+                                N/A
+                            {% endif %}
+                            {% if router.info.cpu_frequency != 'N/A' %}
+                                @ {{ router.info.cpu_frequency }} MHz
+                            {% endif %}
+                        </div>
+                        <div class="mb-2">
                             <strong>Firmware:</strong> {{ router.info.version }}
+                        </div>
+                        <div class="mb-2">
+                            <strong>Board:</strong> {{ router.info.board_name }}
+                        </div>
+                        <div class="mb-2">
+                            <strong>Architecture:</strong> {{ router.info.architecture_name }}
                         </div>
                     {% endif %}
                 </div>

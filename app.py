@@ -149,11 +149,11 @@ def get_router_info(api):
     try:
         # Get system identity
         identity = api.get_resource('/system/identity')
-        router_name = identity.get()[0]['name']
+        router_name = identity.get()[0]['name'] if identity.get() else 'N/A'
         
         # Get system resources
         resources = api.get_resource('/system/resource')
-        resource_data = resources.get()[0]
+        resource_data = resources.get()[0] if resources.get() else {}
         
         # Get uptime
         uptime = resource_data.get('uptime', 'N/A')
@@ -165,9 +165,29 @@ def get_router_info(api):
         
         # Get CPU info
         cpu_load = resource_data.get('cpu-load', 'N/A')
+        cpu_count = resource_data.get('cpu-count', 'N/A')
+        cpu_frequency = resource_data.get('cpu-frequency', 'N/A')
         
         # Get firmware version
         version = resource_data.get('version', 'N/A')
+        
+        # Get board information
+        board_name = resource_data.get('board-name', 'N/A')
+        architecture_name = resource_data.get('architecture-name', 'N/A')
+        platform = resource_data.get('platform', 'N/A')
+        
+        # Get system package information
+        build_time = resource_data.get('build-time', 'N/A')
+        factory_software = resource_data.get('factory-software', 'N/A')
+        
+        # Calculate memory usage percentage
+        memory_usage_percent = 'N/A'
+        if total_memory != 'N/A' and used_memory != 'N/A' and total_memory != '0':
+            try:
+                memory_usage_percent = (int(used_memory) / int(total_memory) * 100)
+                memory_usage_percent = round(memory_usage_percent, 1)
+            except (ValueError, ZeroDivisionError):
+                memory_usage_percent = 'N/A'
         
         return {
             'name': router_name,
@@ -175,8 +195,16 @@ def get_router_info(api):
             'total_memory': total_memory,
             'free_memory': free_memory,
             'used_memory': used_memory,
+            'memory_usage_percent': memory_usage_percent,
             'cpu_load': cpu_load,
-            'version': version
+            'cpu_count': cpu_count,
+            'cpu_frequency': cpu_frequency,
+            'version': version,
+            'board_name': board_name,
+            'architecture_name': architecture_name,
+            'platform': platform,
+            'build_time': build_time,
+            'factory_software': factory_software
         }
     except Exception as e:
         return {'error': str(e)}
