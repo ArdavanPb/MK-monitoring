@@ -4,6 +4,7 @@
 - **Start Flask app**: `venv/bin/python app.py`
 - **Start bandwidth collector**: `venv/bin/python bandwidth_collector.py`
 - **Run both services**: Use Docker Compose with `docker-compose up`
+- **Docker troubleshooting**: If getting `OperationalError: no such table: routers`, rebuild with `docker-compose build --no-cache`
 
 ## Dependencies
 - Flask==2.3.3
@@ -15,6 +16,8 @@
 - **Tables**: 
   - `routers`: Router connection information
   - `ip_bandwidth_data`: Per-IP bandwidth monitoring data
+  - `router_status_cache`: Router status cache for faster dashboard loading
+- **Database initialization**: Both `app.py` and `bandwidth_collector.py` include database initialization to prevent `OperationalError: no such table` errors
 
 ## Features
 - **Per-IP bandwidth monitoring**: Tracks data volume in megabytes every minute for internal IPs only

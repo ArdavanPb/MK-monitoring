@@ -6,3 +6,15 @@ services:
     volumes:
       - ./data:/app/data
     restart: unless-stopped
+    networks:
+      - mikrotik-monitor-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  mikrotik-monitor-network:
+    driver: bridge

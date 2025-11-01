@@ -9,11 +9,79 @@ import time
 import schedule
 import threading
 from datetime import datetime
+import os
 
-db_path = 'data/routers.db'
+# Use absolute path for Docker compatibility
+db_path = '/app/data/routers.db'
 
 # Dictionary to store previous interface statistics for each router
 router_interface_stats = {}
+
+def init_db():
+    """Initialize database tables if they don't exist"""
+    global db_path
+    
+    # Use persistent data directory
+    data_dir = '/app/data'
+    os.makedirs(data_dir, exist_ok=True)
+    
+    try:
+        conn = sqlite3.connect(db_path)
+        c = conn.cursor()
+        
+        # Create routers table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS routers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                host TEXT NOT NULL,
+                port INTEGER DEFAULT 8728,
+                username TEXT NOT NULL,
+                password TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Create per-IP bandwidth monitoring table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS ip_bandwidth_data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                router_id INTEGER NOT NULL,
+                ip_address TEXT NOT NULL,
+                mac_address TEXT,
+                hostname TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                rx_bytes INTEGER DEFAULT 0,
+                tx_bytes INTEGER DEFAULT 0,
+                FOREIGN KEY (router_id) REFERENCES routers (id)
+            )
+        ''')
+        
+        # Create router status cache table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS router_status_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                router_id INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                last_checked TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                router_info TEXT,
+                FOREIGN KEY (router_id) REFERENCES routers (id)
+            )
+        ''')
+        
+        # Create indexes for faster queries
+        c.execute('CREATE INDEX IF NOT EXISTS idx_ip_bandwidth_router_time ON ip_bandwidth_data (router_id, timestamp)')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_ip_bandwidth_ip ON ip_bandwidth_data (ip_address)')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_ip_bandwidth_mac ON ip_bandwidth_data (mac_address)')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_router_status_time ON router_status_cache (last_checked)')
+        
+        conn.commit()
+        conn.close()
+        print(f"Database initialized successfully at {db_path}")
+        
+    except Exception as e:
+        print(f"Error initializing database at {db_path}: {e}")
+        raise
 
 def collect_all_routers_bandwidth():
     """Collect bandwidth data for all routers in the database"""
@@ -21,13 +89,26 @@ def collect_all_routers_bandwidth():
         conn = sqlite3.connect(db_path)
         c = conn.cursor()
         
+        # Check if routers table exists
+        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='routers'")
+        if not c.fetchone():
+            print("Routers table not found, initializing database...")
+            conn.close()
+            init_db()
+            conn = sqlite3.connect(db_path)
+            c = conn.cursor()
+        
         # Get all routers
         c.execute('SELECT id, name, host, port, username, password FROM routers')
         routers = c.fetchall()
         
         # Check which routers are online from cache
-        c.execute('SELECT router_id, status FROM router_status_cache')
-        router_status = {row[0]: row[1] for row in c.fetchall()}
+        try:
+            c.execute('SELECT router_id, status FROM router_status_cache')
+            router_status = {row[0]: row[1] for row in c.fetchall()}
+        except sqlite3.OperationalError:
+            # router_status_cache table might not exist yet
+            router_status = {}
         conn.close()
         
         for router in routers:
@@ -238,8 +319,23 @@ def run_scheduler():
         time.sleep(1)
 
 if __name__ == "__main__":
-    # Run the collector immediately on startup
-    collect_all_routers_bandwidth()
+    # Initialize database first
+    init_db()
+    
+    # Run the collector immediately on startup with retry logic
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            collect_all_routers_bandwidth()
+            break
+        except sqlite3.OperationalError as e:
+            if "no such table" in str(e) and attempt < max_retries - 1:
+                print(f"Database table error, retrying... (attempt {attempt + 1}/{max_retries})")
+                time.sleep(2)
+                init_db()  # Re-initialize database
+            else:
+                print(f"Failed to collect bandwidth data after {max_retries} attempts: {e}")
+                break
     
     # Start the scheduler in a separate thread
     scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)

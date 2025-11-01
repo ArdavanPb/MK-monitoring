@@ -3,22 +3,31 @@ import sqlite3
 from datetime import datetime
 import routeros_api
 import json
+import os
+import hashlib
 
 app = Flask(__name__)
 app.secret_key = 'your-secret-key-here'
 
-# Global database path
-db_path = 'data/routers.db'
+# Default admin credentials (username: admin, password: admin)
+DEFAULT_USERNAME = 'admin'
+DEFAULT_PASSWORD = 'admin'
+
+# Global database path - Docker compatible
+import os
+db_path = os.environ.get('DB_PATH', '/app/data/routers.db')
+
+# For development outside Docker, use local data directory
+if not os.path.exists('/app/data'):
+    db_path = 'data/routers.db'
 
 # Database setup
 def init_db():
     global db_path
-    import os
     
     # Use persistent data directory
-    data_dir = 'data'
+    data_dir = os.path.dirname(db_path)
     os.makedirs(data_dir, exist_ok=True)
-    # db_path is already set globally
     
     try:
         conn = sqlite3.connect(db_path)
@@ -64,6 +73,24 @@ def init_db():
             )
         ''')
         
+        # Create users table for authentication
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Create default admin user if not exists
+        password_hash = hashlib.sha256(DEFAULT_PASSWORD.encode()).hexdigest()
+        try:
+            c.execute('INSERT OR IGNORE INTO users (username, password_hash) VALUES (?, ?)', 
+                     (DEFAULT_USERNAME, password_hash))
+        except sqlite3.IntegrityError:
+            pass  # User already exists
+        
         # Check if router_info column exists (for backward compatibility)
         try:
             c.execute("SELECT router_info FROM router_status_cache LIMIT 1")
@@ -87,102 +114,10 @@ def init_db():
         conn.commit()
         conn.close()
         print(f"Database initialized successfully at {db_path}")
-        # Continue to ensure all tables are created
+        
     except Exception as e:
         print(f"Error initializing database at {db_path}: {e}")
-    
-    # Try current directory as fallback
-    fallback_db_path = 'routers.db'
-    try:
-        conn = sqlite3.connect(fallback_db_path)
-        c = conn.cursor()
-        
-        # Create all tables in fallback database
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS routers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                host TEXT NOT NULL,
-                port INTEGER DEFAULT 8728,
-                username TEXT NOT NULL,
-                password TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # Create per-IP bandwidth monitoring table
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS ip_bandwidth_data (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                router_id INTEGER NOT NULL,
-                ip_address TEXT NOT NULL,
-                mac_address TEXT,
-                hostname TEXT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                rx_bytes INTEGER DEFAULT 0,
-                tx_bytes INTEGER DEFAULT 0,
-                FOREIGN KEY (router_id) REFERENCES routers (id)
-            )
-        ''')
-        
-        # Create router status cache table
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS router_status_cache (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                router_id INTEGER NOT NULL,
-                status TEXT NOT NULL,
-                last_checked TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                router_info TEXT,
-                FOREIGN KEY (router_id) REFERENCES routers (id)
-            )
-        ''')
-        
-        # Check if router_info column exists (for backward compatibility)
-        try:
-            c.execute("SELECT router_info FROM router_status_cache LIMIT 1")
-            print("Using existing router_info column")
-        except sqlite3.OperationalError:
-            # router_info column doesn't exist, check for info_json
-            try:
-                c.execute("SELECT info_json FROM router_status_cache LIMIT 1")
-                print("Using existing info_json column")
-            except sqlite3.OperationalError:
-                # Neither column exists, add router_info column
-                c.execute("ALTER TABLE router_status_cache ADD COLUMN router_info TEXT")
-                print("Added router_info column to router_status_cache table")
-        
-        # Create indexes
-        c.execute('CREATE INDEX IF NOT EXISTS idx_ip_bandwidth_router_time ON ip_bandwidth_data (router_id, timestamp)')
-        c.execute('CREATE INDEX IF NOT EXISTS idx_ip_bandwidth_ip ON ip_bandwidth_data (ip_address)')
-        c.execute('CREATE INDEX IF NOT EXISTS idx_ip_bandwidth_mac ON ip_bandwidth_data (mac_address)')
-        c.execute('CREATE INDEX IF NOT EXISTS idx_router_status_time ON router_status_cache (last_checked)')
-        
-        conn.commit()
-        conn.close()
-        print(f"Fallback database initialized successfully at {fallback_db_path}")
-        # Don't change the global db_path - keep using data/routers.db
-        return
-    except Exception as e:
-        print(f"Error initializing fallback database at {fallback_db_path}: {e}")
-    
-    # Last resort: use in-memory database
-    db_path = ':memory:'
-    conn = sqlite3.connect(db_path)
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS routers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            host TEXT NOT NULL,
-            port INTEGER DEFAULT 8728,
-            username TEXT NOT NULL,
-            password TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    conn.commit()
-    conn.close()
-    print("Using in-memory database (data will be lost on restart)")
+        raise
 
 # MikroTik API connection helper
 def connect_to_router(host, port, username, password):
@@ -429,6 +364,20 @@ def collect_ip_bandwidth_data(router_id, api):
         print(f"Error collecting IP bandwidth data: {e}")
         return False
 
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def verify_password(password, password_hash):
+    return hash_password(password) == password_hash
+
+def login_required(f):
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    decorated_function.__name__ = f.__name__
+    return decorated_function
+
 def update_router_status_cache(router_id, name, host, port, username, password):
     """Update router status cache for faster dashboard loading"""
     from datetime import datetime
@@ -512,8 +461,74 @@ def get_ip_bandwidth_stats(router_id, time_periods):
     conn.close()
     return stats
 
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        
+        conn = sqlite3.connect(db_path)
+        c = conn.cursor()
+        c.execute('SELECT id, username, password_hash FROM users WHERE username = ?', (username,))
+        user = c.fetchone()
+        conn.close()
+        
+        if user and verify_password(password, user[2]):
+            session['user_id'] = user[0]
+            session['username'] = user[1]
+            flash('Login successful!', 'success')
+            return redirect(url_for('index'))
+        else:
+            flash('Invalid username or password', 'error')
+    
+    return render_template('login.html')
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    flash('You have been logged out', 'info')
+    return redirect(url_for('login'))
+
 @app.route('/')
 def index():
+    # Redirect to login if not authenticated, otherwise show dashboard
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    
+    # Show dashboard if authenticated
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    c.execute('SELECT * FROM routers ORDER BY created_at DESC')
+    routers = c.fetchall()
+    conn.close()
+    
+    router_data = []
+    for router in routers:
+        router_id, name, host, port, username, password, created_at = router
+        api, connection, error = connect_to_router(host, port, username, password)
+        
+        if api:
+            info = get_router_info(api)
+            connection.disconnect()
+            router_data.append({
+                'id': router_id,
+                'name': name,
+                'host': host,
+                'port': port,
+                'info': info,
+                'status': 'online'
+            })
+        else:
+            router_data.append({
+                'id': router_id,
+                'name': name,
+                'host': host,
+                'port': port,
+                'info': {'error': error or 'Connection failed'},
+                'status': 'offline'
+            })
+    
+    return render_template('index.html', routers=router_data)
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
     c.execute('SELECT * FROM routers ORDER BY created_at DESC')
@@ -549,6 +564,7 @@ def index():
     return render_template('index.html', routers=router_data)
 
 @app.route('/add_router', methods=['GET', 'POST'])
+@login_required
 def add_router():
     if request.method == 'POST':
         name = request.form['name']
@@ -593,6 +609,7 @@ def add_router():
     return render_template('add_router.html')
 
 @app.route('/delete_router/<int:router_id>')
+@login_required
 def delete_router(router_id):
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
@@ -603,6 +620,7 @@ def delete_router(router_id):
     return redirect(url_for('index'))
 
 @app.route('/refresh_router/<int:router_id>')
+@login_required
 def refresh_router(router_id):
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
@@ -622,6 +640,7 @@ def refresh_router(router_id):
     return redirect(url_for('index'))
 
 @app.route('/monitor_router/<int:router_id>')
+@login_required
 def monitor_router(router_id):
     # Get selected time period from query parameter, default to 1h
     selected_period = request.args.get('period', '1h')

@@ -12,15 +12,33 @@
         .status-badge {
             font-size: 0.8rem;
         }
+        .search-highlight {
+            border-color: #0d6efd !important;
+            box-shadow: 0 0 0 0.2rem rgba(13, 110, 253, 0.25) !important;
+        }
+        .no-results {
+            text-align: center;
+            padding: 20px;
+            color: #6c757d;
+            font-style: italic;
+        }
     </style>
 </head>
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
         <div class="container">
             <a class="navbar-brand" href="{{ url_for('index') }}">MikroTik Monitor</a>
-            <div class="navbar-nav">
+            <div class="navbar-nav me-auto">
                 <a class="nav-link" href="{{ url_for('index') }}">Dashboard</a>
                 <a class="nav-link" href="{{ url_for('add_router') }}">Add Router</a>
+            </div>
+            <div class="navbar-nav">
+                {% if session.username %}
+                    <span class="navbar-text me-3">Welcome, {{ session.username }}</span>
+                    <a class="nav-link" href="{{ url_for('logout') }}">Logout</a>
+                {% else %}
+                    <a class="nav-link" href="{{ url_for('login') }}">Login</a>
+                {% endif %}
             </div>
         </div>
     </nav>

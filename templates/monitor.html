@@ -337,13 +337,21 @@
     <!-- DHCP Leases -->
     <div class="col-md-12">
         <div class="card mb-4">
-            <div class="card-header">
+            <div class="card-header d-flex justify-content-between align-items-center">
                 <h5 class="card-title mb-0">Internal IP Addresses ({{ info.dhcp_leases|length }})</h5>
+                <div class="d-flex gap-2">
+                    <input type="text" id="internalIpSearch" class="form-control form-control-sm" placeholder="Search IP, MAC, or Hostname..." style="width: 250px;">
+                    <select id="internalIpSort" class="form-select form-select-sm" style="width: 150px;">
+                        <option value="ip">Sort by IP</option>
+                        <option value="hostname">Sort by Hostname</option>
+                        <option value="status">Sort by Status</option>
+                    </select>
+                </div>
             </div>
             <div class="card-body">
                 {% if info.dhcp_leases %}
                     <div class="table-responsive">
-                        <table class="table table-striped table-sm">
+                        <table class="table table-striped table-sm" id="internalIpTable">
                             <thead>
                                 <tr>
                                     <th>IP Address</th>
@@ -384,24 +392,33 @@
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
         <h5 class="card-title mb-0">Per-IP Bandwidth Usage (Internal IPs Only)</h5>
-        <div class="dropdown">
-            <button class="btn btn-outline-secondary dropdown-toggle" type="button" id="timePeriodDropdown" data-bs-toggle="dropdown" aria-expanded="false">
-                {% for period_id, period_label in time_periods %}
-                    {% if period_id == selected_period %}
-                        {{ period_label }}
-                    {% endif %}
-                {% endfor %}
-            </button>
-            <ul class="dropdown-menu" aria-labelledby="timePeriodDropdown">
-                {% for period_id, period_label in time_periods %}
-                <li>
-                    <a class="dropdown-item {% if period_id == selected_period %}active{% endif %}" 
-                       href="{{ url_for('monitor_router', router_id=router.id, period=period_id) }}">
-                        {{ period_label }}
-                    </a>
-                </li>
-                {% endfor %}
-            </ul>
+        <div class="d-flex gap-2">
+            <div class="dropdown">
+                <button class="btn btn-outline-secondary dropdown-toggle" type="button" id="timePeriodDropdown" data-bs-toggle="dropdown" aria-expanded="false">
+                    {% for period_id, period_label in time_periods %}
+                        {% if period_id == selected_period %}
+                            {{ period_label }}
+                        {% endif %}
+                    {% endfor %}
+                </button>
+                <ul class="dropdown-menu" aria-labelledby="timePeriodDropdown">
+                    {% for period_id, period_label in time_periods %}
+                    <li>
+                        <a class="dropdown-item {% if period_id == selected_period %}active{% endif %}" 
+                           href="{{ url_for('monitor_router', router_id=router.id, period=period_id) }}">
+                            {{ period_label }}
+                        </a>
+                    </li>
+                    {% endfor %}
+                </ul>
+            </div>
+            <input type="text" id="bandwidthIpSearch" class="form-control form-control-sm" placeholder="Search IP address..." style="width: 200px;">
+            <select id="bandwidthSort" class="form-select form-select-sm" style="width: 180px;">
+                <option value="ip">Sort by IP</option>
+                <option value="upload">Most Upload</option>
+                <option value="download">Most Download</option>
+                <option value="total">Most Total</option>
+            </select>
         </div>
     </div>
     <div class="card-body">
@@ -409,7 +426,7 @@
             {% set period_data = bandwidth_stats[selected_period] %}
             {% if period_data %}
                 <div class="table-responsive">
-                    <table class="table table-striped table-sm">
+                    <table class="table table-striped table-sm" id="bandwidthTable">
                         <thead>
                             <tr>
                                 <th>IP Address</th>
@@ -464,4 +481,343 @@
         {% endif %}
     </div>
 </div>
+
+<script>
+    // Internal IP Addresses filtering and sorting
+    document.addEventListener('DOMContentLoaded', function() {
+        console.log('DOM loaded, initializing filters...');
+        
+        // Internal IP Addresses functionality
+        const internalIpSearch = document.getElementById('internalIpSearch');
+        const internalIpSort = document.getElementById('internalIpSort');
+        const internalIpTable = document.getElementById('internalIpTable');
+        
+        console.log('Internal IP elements found:', {
+            search: !!internalIpSearch,
+            sort: !!internalIpSort,
+            table: !!internalIpTable
+        });
+        
+        if (internalIpTable && internalIpSearch && internalIpSort) {
+            console.log('Initializing Internal IP table functionality...');
+            
+            // Function to get current rows (always fresh from DOM)
+            function getInternalIpRows() {
+                return Array.from(internalIpTable.querySelectorAll('tbody tr'));
+            }
+            
+            // Search functionality
+            internalIpSearch.addEventListener('input', function() {
+                const searchTerm = this.value.toLowerCase().trim();
+                console.log('Internal IP search term:', searchTerm);
+                
+                // Add/remove highlight class
+                if (searchTerm) {
+                    this.classList.add('search-highlight');
+                } else {
+                    this.classList.remove('search-highlight');
+                }
+                
+                const rows = getInternalIpRows();
+                console.log('Searching through', rows.length, 'rows');
+                
+                let visibleCount = 0;
+                rows.forEach(row => {
+                    const cells = row.querySelectorAll('td');
+                    const ipText = cells[0].textContent.toLowerCase();
+                    const macText = cells[1].textContent.toLowerCase();
+                    const hostnameText = cells[2].textContent.toLowerCase();
+                    
+                    const matches = ipText.includes(searchTerm) || 
+                                   macText.includes(searchTerm) || 
+                                   hostnameText.includes(searchTerm);
+                    
+                    row.style.display = matches ? '' : 'none';
+                    if (matches) visibleCount++;
+                    console.log('Row:', ipText, 'matches:', matches);
+                });
+                
+                console.log('Search complete. Visible rows:', visibleCount);
+            });
+            
+            // Sort functionality
+            internalIpSort.addEventListener('change', function() {
+                const sortBy = this.value;
+                console.log('Internal IP sort changed to:', sortBy);
+                
+                const tbody = internalIpTable.querySelector('tbody');
+                const rows = getInternalIpRows();
+                
+                // Filter out hidden rows for sorting
+                const visibleRows = rows.filter(row => row.style.display !== 'none');
+                
+                visibleRows.sort((a, b) => {
+                    const aCells = a.querySelectorAll('td');
+                    const bCells = b.querySelectorAll('td');
+                    
+                    switch(sortBy) {
+                        case 'ip':
+                            return compareIPs(aCells[0].textContent, bCells[0].textContent);
+                        case 'hostname':
+                            const aHostname = aCells[2].textContent.toLowerCase();
+                            const bHostname = bCells[2].textContent.toLowerCase();
+                            return aHostname.localeCompare(bHostname);
+                        case 'status':
+                            const aStatus = aCells[3].textContent.toLowerCase();
+                            const bStatus = bCells[3].textContent.toLowerCase();
+                            return aStatus.localeCompare(bStatus);
+                        default:
+                            return 0;
+                    }
+                });
+                
+                // Clear and re-append sorted rows
+                tbody.innerHTML = '';
+                visibleRows.forEach(row => tbody.appendChild(row));
+                console.log('Internal IP table sorted by', sortBy);
+            });
+            
+            console.log('Internal IP table functionality initialized successfully');
+        } else {
+            console.error('Internal IP table elements not found properly');
+        }
+        
+        // Bandwidth table filtering and sorting
+        const bandwidthIpSearch = document.getElementById('bandwidthIpSearch');
+        const bandwidthSort = document.getElementById('bandwidthSort');
+        const bandwidthTable = document.getElementById('bandwidthTable');
+        
+        console.log('Bandwidth elements found:', {
+            search: !!bandwidthIpSearch,
+            sort: !!bandwidthSort,
+            table: !!bandwidthTable
+        });
+        
+        if (bandwidthTable && bandwidthIpSearch && bandwidthSort) {
+            console.log('Initializing Bandwidth table functionality...');
+            
+            // Function to get current rows (always fresh from DOM)
+            function getBandwidthRows() {
+                return Array.from(bandwidthTable.querySelectorAll('tbody tr'));
+            }
+            
+            // Search functionality
+            bandwidthIpSearch.addEventListener('input', function() {
+                const searchTerm = this.value.toLowerCase().trim();
+                console.log('Bandwidth search term:', searchTerm);
+                
+                // Add/remove highlight class
+                if (searchTerm) {
+                    this.classList.add('search-highlight');
+                } else {
+                    this.classList.remove('search-highlight');
+                }
+                
+                const rows = getBandwidthRows();
+                console.log('Searching through', rows.length, 'bandwidth rows');
+                
+                let visibleCount = 0;
+                rows.forEach(row => {
+                    const ipCell = row.querySelector('td:first-child');
+                    const ipText = ipCell.textContent.toLowerCase();
+                    const matches = ipText.includes(searchTerm);
+                    
+                    row.style.display = matches ? '' : 'none';
+                    if (matches) visibleCount++;
+                    console.log('Bandwidth row:', ipText, 'matches:', matches);
+                });
+                
+                console.log('Bandwidth search complete. Visible rows:', visibleCount);
+            });
+            
+            // Sort functionality
+            bandwidthSort.addEventListener('change', function() {
+                const sortBy = this.value;
+                console.log('Bandwidth sort changed to:', sortBy);
+                
+                const tbody = bandwidthTable.querySelector('tbody');
+                const rows = getBandwidthRows();
+                
+                // Filter out hidden rows for sorting
+                const visibleRows = rows.filter(row => row.style.display !== 'none');
+                
+                visibleRows.sort((a, b) => {
+                    const aCells = a.querySelectorAll('td');
+                    const bCells = b.querySelectorAll('td');
+                    
+                    switch(sortBy) {
+                        case 'ip':
+                            return compareIPs(aCells[0].textContent, bCells[0].textContent);
+                        case 'upload':
+                            const aUpload = extractNumber(aCells[1].textContent);
+                            const bUpload = extractNumber(bCells[1].textContent);
+                            return bUpload - aUpload; // Descending
+                        case 'download':
+                            const aDownload = extractNumber(aCells[2].textContent);
+                            const bDownload = extractNumber(bCells[2].textContent);
+                            return bDownload - aDownload; // Descending
+                        case 'total':
+                            const aTotal = extractNumber(aCells[3].textContent);
+                            const bTotal = extractNumber(bCells[3].textContent);
+                            return bTotal - aTotal; // Descending
+                        default:
+                            return 0;
+                    }
+                });
+                
+                // Clear and re-append sorted rows
+                tbody.innerHTML = '';
+                visibleRows.forEach(row => tbody.appendChild(row));
+                console.log('Bandwidth table sorted by', sortBy);
+            });
+            
+            console.log('Bandwidth table functionality initialized successfully');
+        } else {
+            console.error('Bandwidth table elements not found properly');
+        }
+        
+        // Helper function to extract number from text (handles badges and formatting)
+        function extractNumber(text) {
+            // Extract first number from text (handles "1.23 MB" or badges)
+            const match = text.match(/[\d.]+/);
+            return match ? parseFloat(match[0]) : 0;
+        }
+        
+        // Helper function to compare IP addresses
+        function compareIPs(ipA, ipB) {
+            // Remove <code> tags if present
+            const cleanIpA = ipA.replace(/<[^>]*>/g, '').trim();
+            const cleanIpB = ipB.replace(/<[^>]*>/g, '').trim();
+            
+            const aParts = cleanIpA.split('.').map(part => parseInt(part) || 0);
+            const bParts = cleanIpB.split('.').map(part => parseInt(part) || 0);
+            
+            for (let i = 0; i < 4; i++) {
+                if (aParts[i] !== bParts[i]) {
+                    return aParts[i] - bParts[i];
+                }
+            }
+            return 0;
+        }
+        
+        console.log('All filter functionality initialized successfully!');
+    });
+</script>
 {% endblock %}
+    // Internal IP Addresses filtering and sorting
+    document.addEventListener('DOMContentLoaded', function() {
+        // Internal IP Addresses functionality
+        const internalIpSearch = document.getElementById('internalIpSearch');
+        const internalIpSort = document.getElementById('internalIpSort');
+        const internalIpTable = document.getElementById('internalIpTable');
+        
+        if (internalIpTable) {
+            let internalIpRows = Array.from(internalIpTable.querySelectorAll('tbody tr'));
+            
+            // Search functionality
+            internalIpSearch.addEventListener('input', function() {
+                const searchTerm = this.value.toLowerCase();
+                internalIpRows.forEach(row => {
+                    const text = row.textContent.toLowerCase();
+                    row.style.display = text.includes(searchTerm) ? '' : 'none';
+                });
+            });
+            
+            // Sort functionality
+            internalIpSort.addEventListener('change', function() {
+                const sortBy = this.value;
+                const tbody = internalIpTable.querySelector('tbody');
+                
+                internalIpRows.sort((a, b) => {
+                    const aCells = a.querySelectorAll('td');
+                    const bCells = b.querySelectorAll('td');
+                    
+                    switch(sortBy) {
+                        case 'ip':
+                            return compareIPs(aCells[0].textContent, bCells[0].textContent);
+                        case 'hostname':
+                            const aHostname = aCells[2].textContent.toLowerCase();
+                            const bHostname = bCells[2].textContent.toLowerCase();
+                            return aHostname.localeCompare(bHostname);
+                        case 'status':
+                            const aStatus = aCells[3].textContent.toLowerCase();
+                            const bStatus = bCells[3].textContent.toLowerCase();
+                            return aStatus.localeCompare(bStatus);
+                        default:
+                            return 0;
+                    }
+                });
+                
+                // Clear and re-append sorted rows
+                tbody.innerHTML = '';
+                internalIpRows.forEach(row => tbody.appendChild(row));
+            });
+        }
+        
+        // Bandwidth table filtering and sorting
+        const bandwidthIpSearch = document.getElementById('bandwidthIpSearch');
+        const bandwidthSort = document.getElementById('bandwidthSort');
+        const bandwidthTable = document.getElementById('bandwidthTable');
+        
+        if (bandwidthTable) {
+            let bandwidthRows = Array.from(bandwidthTable.querySelectorAll('tbody tr'));
+            
+            // Search functionality
+            bandwidthIpSearch.addEventListener('input', function() {
+                const searchTerm = this.value.toLowerCase();
+                bandwidthRows.forEach(row => {
+                    const ipCell = row.querySelector('td:first-child');
+                    const ipText = ipCell.textContent.toLowerCase();
+                    row.style.display = ipText.includes(searchTerm) ? '' : 'none';
+                });
+            });
+            
+            // Sort functionality
+            bandwidthSort.addEventListener('change', function() {
+                const sortBy = this.value;
+                const tbody = bandwidthTable.querySelector('tbody');
+                
+                bandwidthRows.sort((a, b) => {
+                    const aCells = a.querySelectorAll('td');
+                    const bCells = b.querySelectorAll('td');
+                    
+                    switch(sortBy) {
+                        case 'ip':
+                            return compareIPs(aCells[0].textContent, bCells[0].textContent);
+                        case 'upload':
+                            const aUpload = parseFloat(aCells[1].textContent) || 0;
+                            const bUpload = parseFloat(bCells[1].textContent) || 0;
+                            return bUpload - aUpload; // Descending
+                        case 'download':
+                            const aDownload = parseFloat(aCells[2].textContent) || 0;
+                            const bDownload = parseFloat(bCells[2].textContent) || 0;
+                            return bDownload - aDownload; // Descending
+                        case 'total':
+                            const aTotal = parseFloat(aCells[3].textContent) || 0;
+                            const bTotal = parseFloat(bCells[3].textContent) || 0;
+                            return bTotal - aTotal; // Descending
+                        default:
+                            return 0;
+                    }
+                });
+                
+                // Clear and re-append sorted rows
+                tbody.innerHTML = '';
+                bandwidthRows.forEach(row => tbody.appendChild(row));
+            });
+        }
+        
+        // Helper function to compare IP addresses
+        function compareIPs(ipA, ipB) {
+            const aParts = ipA.split('.').map(part => parseInt(part) || 0);
+            const bParts = ipB.split('.').map(part => parseInt(part) || 0);
+            
+            for (let i = 0; i < 4; i++) {
+                if (aParts[i] !== bParts[i]) {
+                    return aParts[i] - bParts[i];
+                }
+            }
+            return 0;
+        }
+    });
+</script>
