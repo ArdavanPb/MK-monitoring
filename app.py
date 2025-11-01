@@ -229,9 +229,24 @@ def get_detailed_router_info(api):
         try:
             dhcp_leases = api.get_resource('/ip/dhcp-server/lease')
             detailed_info['dhcp_leases'] = dhcp_leases.get() if dhcp_leases.get() else []
+            print(f"DHCP leases found: {len(detailed_info['dhcp_leases'])}")
+            if detailed_info['dhcp_leases']:
+                print(f"Sample DHCP lease: {detailed_info['dhcp_leases'][0]}")
         except Exception as e:
             detailed_info['dhcp_leases'] = []
             print(f"Warning: Could not get DHCP leases: {e}")
+        
+        # Get ARP table for MAC addresses and hostnames
+        try:
+            arp = api.get_resource('/ip/arp')
+            arp_data = arp.get() if arp.get() else []
+            detailed_info['arp_table'] = arp_data
+            print(f"ARP entries found: {len(detailed_info['arp_table'])}")
+            if detailed_info['arp_table']:
+                print(f"Sample ARP entry: {detailed_info['arp_table'][0]}")
+        except Exception as e:
+            detailed_info['arp_table'] = []
+            print(f"Warning: Could not get ARP table: {e}")
         
         # Get system health
         try:

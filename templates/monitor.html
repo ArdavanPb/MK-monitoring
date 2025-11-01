@@ -240,9 +240,9 @@
                                     <td>
                                         {% set found_mac = false %}
                                         {% for arp in info.arp_table %}
-                                            {% if arp.address == ip.address and arp.mac_address %}
+                                            {% if arp.address == ip.address and arp['mac-address'] %}
                                                 {% set found_mac = true %}
-                                                <code>{{ arp.mac_address }}</code>
+                                                <code>{{ arp['mac-address'] }}</code>
                                             {% endif %}
                                         {% endfor %}
                                         {% if not found_mac %}
@@ -252,16 +252,16 @@
                                     <td>
                                         {% set found_hostname = false %}
                                         {% for arp in info.arp_table %}
-                                            {% if arp.address == ip.address and arp.host_name %}
+                                            {% if arp.address == ip.address and arp['host-name'] %}
                                                 {% set found_hostname = true %}
-                                                {{ arp.host_name }}
+                                                {{ arp['host-name'] }}
                                             {% endif %}
                                         {% endfor %}
                                         {% if not found_hostname %}
                                             {% for lease in info.dhcp_leases %}
-                                                {% if lease.address == ip.address and lease.host_name %}
+                                                {% if lease.address == ip.address and lease['host-name'] %}
                                                     {% set found_hostname = true %}
-                                                    {{ lease.host_name }}
+                                                    {{ lease['host-name'] }}
                                                 {% endif %}
                                             {% endfor %}
                                         {% endif %}
@@ -332,6 +332,22 @@
     </div>
 </div>
 
+<!-- Debug Information (remove in production) -->
+{% if false %}  <!-- Set to true to enable debug info -->
+<div class="card mb-4">
+    <div class="card-header">
+        <h5 class="card-title mb-0">Debug Information</h5>
+    </div>
+    <div class="card-body">
+        <h6>DHCP Leases ({{ info.dhcp_leases|length }}):</h6>
+        <pre>{{ info.dhcp_leases|tojson(indent=2) }}</pre>
+        
+        <h6>ARP Table ({{ info.arp_table|length }}):</h6>
+        <pre>{{ info.arp_table|tojson(indent=2) }}</pre>
+    </div>
+</div>
+{% endif %}
+
 <!-- Internal IP Addresses -->
 <div class="row">
     <!-- DHCP Leases -->
@@ -364,8 +380,8 @@
                                 {% for lease in info.dhcp_leases %}
                                 <tr>
                                     <td><code>{{ lease.address }}</code></td>
-                                    <td><code>{{ lease.mac_address }}</code></td>
-                                    <td>{{ lease.host_name if lease.host_name else 'N/A' }}</td>
+                                    <td><code>{{ lease['mac-address'] }}</code></td>
+                                    <td>{{ lease['host-name'] if lease['host-name'] else 'N/A' }}</td>
                                     <td>
                                         {% if lease.status == 'bound' %}
                                             <span class="badge bg-success">Bound</span>
