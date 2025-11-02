@@ -228,58 +228,59 @@
         </div>
         {% endif %}
 
-        <!-- System Logs Summary -->
-        <div class="card mb-4">
-            <div class="card-header">
-                <h5 class="card-title mb-0">System Logs</h5>
+    </div>
+</div>
+
+<!-- System Logs Summary -->
+<div class="card mb-4">
+    <div class="card-header">
+        <h5 class="card-title mb-0">System Logs</h5>
+    </div>
+    <div class="card-body">
+        <div class="row text-center mb-3">
+            <div class="col-3">
+                <h4 class="text-primary">{{ log_stats.total }}</h4>
+                <small class="text-muted">Total Logs</small>
             </div>
-            <div class="card-body">
-                <div class="row text-center mb-3">
-                    <div class="col-3">
-                        <h4 class="text-primary">{{ log_stats.total }}</h4>
-                        <small class="text-muted">Total Logs</small>
+            <div class="col-3">
+                <h4 class="text-danger">{{ log_stats.severities.critical }}</h4>
+                <small class="text-muted">Critical</small>
+            </div>
+            <div class="col-3">
+                <h4 class="text-warning">{{ log_stats.severities.error }}</h4>
+                <small class="text-muted">Errors</small>
+            </div>
+            <div class="col-3">
+                <h4 class="text-info">{{ log_stats.severities.warning }}</h4>
+                <small class="text-muted">Warnings</small>
+            </div>
+        </div>
+        
+        <div class="mb-3">
+            <h6>Log Categories:</h6>
+            {% if log_stats.categories %}
+                {% for category, count in log_stats.categories.items() %}
+                    {% if loop.index <= 5 %}  <!-- Show top 5 categories -->
+                    <div class="d-flex justify-content-between align-items-center mb-1">
+                        <span class="small">{{ category }}</span>
+                        <span class="badge bg-secondary">{{ count }}</span>
                     </div>
-                    <div class="col-3">
-                        <h4 class="text-danger">{{ log_stats.severities.critical }}</h4>
-                        <small class="text-muted">Critical</small>
-                    </div>
-                    <div class="col-3">
-                        <h4 class="text-warning">{{ log_stats.severities.error }}</h4>
-                        <small class="text-muted">Errors</small>
-                    </div>
-                    <div class="col-3">
-                        <h4 class="text-info">{{ log_stats.severities.warning }}</h4>
-                        <small class="text-muted">Warnings</small>
-                    </div>
-                </div>
-                
-                <div class="mb-3">
-                    <h6>Log Categories:</h6>
-                    {% if log_stats.categories %}
-                        {% for category, count in log_stats.categories.items() %}
-                            {% if loop.index <= 5 %}  <!-- Show top 5 categories -->
-                            <div class="d-flex justify-content-between align-items-center mb-1">
-                                <span class="small">{{ category }}</span>
-                                <span class="badge bg-secondary">{{ count }}</span>
-                            </div>
-                            {% endif %}
-                        {% endfor %}
-                        {% if log_stats.categories|length > 5 %}
-                            <div class="text-center mt-2">
-                                <small class="text-muted">+{{ log_stats.categories|length - 5 }} more categories</small>
-                            </div>
-                        {% endif %}
-                    {% else %}
-                        <p class="text-muted small">No log categories found</p>
                     {% endif %}
-                </div>
-                
-                <div class="d-grid">
-                    <a href="{{ url_for('router_logs', router_id=router.id) }}" class="btn btn-outline-primary btn-sm">
-                        View All Logs
-                    </a>
-                </div>
-            </div>
+                {% endfor %}
+                {% if log_stats.categories|length > 5 %}
+                    <div class="text-center mt-2">
+                        <small class="text-muted">+{{ log_stats.categories|length - 5 }} more categories</small>
+                    </div>
+                {% endif %}
+            {% else %}
+                <p class="text-muted small">No log categories found</p>
+            {% endif %}
+        </div>
+        
+        <div class="d-grid">
+            <a href="{{ url_for('router_logs', router_id=router.id) }}" class="btn btn-outline-primary btn-sm">
+                View All Logs
+            </a>
         </div>
     </div>
 </div>
