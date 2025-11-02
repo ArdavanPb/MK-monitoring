@@ -69,11 +69,26 @@ def init_db():
             )
         ''')
         
+        # Create interface bandwidth data table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS interface_bandwidth_data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                router_id INTEGER NOT NULL,
+                interface_name TEXT NOT NULL,
+                rx_bytes INTEGER DEFAULT 0,
+                tx_bytes INTEGER DEFAULT 0,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (router_id) REFERENCES routers (id)
+            )
+        ''')
+        
         # Create indexes for faster queries
         c.execute('CREATE INDEX IF NOT EXISTS idx_ip_bandwidth_router_time ON ip_bandwidth_data (router_id, timestamp)')
         c.execute('CREATE INDEX IF NOT EXISTS idx_ip_bandwidth_ip ON ip_bandwidth_data (ip_address)')
         c.execute('CREATE INDEX IF NOT EXISTS idx_ip_bandwidth_mac ON ip_bandwidth_data (mac_address)')
         c.execute('CREATE INDEX IF NOT EXISTS idx_router_status_time ON router_status_cache (last_checked)')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_interface_bandwidth_router_time ON interface_bandwidth_data (router_id, timestamp)')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_interface_bandwidth_name ON interface_bandwidth_data (interface_name)')
         
         conn.commit()
         conn.close()
@@ -135,6 +150,9 @@ def collect_all_routers_bandwidth():
                 # Collect per-IP bandwidth data
                 collect_ip_bandwidth_data(router_id, api)
                 
+                # Collect interface bandwidth data
+                collect_interface_bandwidth_data(router_id, api)
+                
                 # Collect and save logs every 5 minutes
                 current_minute = datetime.now().minute
                 if current_minute % 5 == 0:  # Collect logs every 5 minutes
@@ -164,6 +182,42 @@ def update_router_status_offline(router_id):
         conn.close()
     except Exception as e:
         print(f"Error updating router status cache: {e}")
+
+def collect_interface_bandwidth_data(router_id, api):
+    """Collect interface bandwidth statistics"""
+    try:
+        # Get interface statistics
+        interfaces = api.get_resource('/interface')
+        interface_data = interfaces.get() if interfaces.get() else []
+        
+        conn = sqlite3.connect(db_path)
+        c = conn.cursor()
+        
+        saved_count = 0
+        for iface in interface_data:
+            iface_name = iface.get('name')
+            rx_bytes = iface.get('rx-byte', 0)
+            tx_bytes = iface.get('tx-byte', 0)
+            
+            # Only save if we have valid data
+            if iface_name and rx_bytes and tx_bytes:
+                try:
+                    c.execute('''
+                        INSERT INTO interface_bandwidth_data (router_id, interface_name, rx_bytes, tx_bytes)
+                        VALUES (?, ?, ?, ?)
+                    ''', (router_id, iface_name, int(rx_bytes), int(tx_bytes)))
+                    saved_count += 1
+                except Exception as e:
+                    print(f"Error saving interface data for {iface_name}: {e}")
+        
+        conn.commit()
+        conn.close()
+        
+        if saved_count > 0:
+            print(f"[{datetime.now()}] Saved interface bandwidth data for {saved_count} interfaces")
+        
+    except Exception as e:
+        print(f"[{datetime.now()}] Error collecting interface bandwidth data: {e}")
 
 def collect_router_logs(router_id, api):
     """Collect and save router logs"""

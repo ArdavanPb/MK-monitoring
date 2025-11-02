@@ -119,6 +119,19 @@ def init_db():
             )
         ''')
         
+        # Create interface bandwidth data table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS interface_bandwidth_data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                router_id INTEGER NOT NULL,
+                interface_name TEXT NOT NULL,
+                rx_bytes INTEGER DEFAULT 0,
+                tx_bytes INTEGER DEFAULT 0,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (router_id) REFERENCES routers (id)
+            )
+        ''')
+        
         # Create log retention settings table
         c.execute('''
             CREATE TABLE IF NOT EXISTS log_retention_settings (
@@ -1243,6 +1256,93 @@ def get_ip_bandwidth_history(router_id, ip_address, time_period):
         conn.close()
         raise
 
+def get_interface_bandwidth_data(router_id, time_period):
+    """Get interface bandwidth statistics for charting"""
+    import datetime
+    
+    # Define time periods in minutes
+    periods = {
+        '1h': 60,
+        '3h': 180,
+        '6h': 360,
+        '12h': 720,
+        '24h': 1440,
+        '3d': 4320,
+        '1w': 10080
+    }
+    
+    if time_period not in periods:
+        return {'error': 'Invalid time period'}
+    
+    period_minutes = periods[time_period]
+    threshold = (datetime.datetime.now() - datetime.timedelta(minutes=period_minutes)).strftime('%Y-%m-%d %H:%M:%S')
+    
+    print(f"Interface chart query: router_id={router_id}, period={time_period}, threshold={threshold}")
+    
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    
+    try:
+        # Get interface bandwidth data grouped by interface and time
+        if time_period in ['1h', '3h']:
+            # For shorter periods, group by minute
+            query = '''
+                SELECT 
+                    interface_name,
+                    strftime('%Y-%m-%d %H:%M:00', timestamp) as time_bucket,
+                    SUM(rx_bytes) as total_rx,
+                    SUM(tx_bytes) as total_tx
+                FROM interface_bandwidth_data 
+                WHERE router_id = ? AND timestamp >= ?
+                GROUP BY interface_name, time_bucket
+                ORDER BY time_bucket
+            '''
+            print("Executing 1-minute interval query for interfaces")
+            c.execute(query, (router_id, threshold))
+        else:
+            # For longer periods, group by 5-minute intervals
+            query = '''
+                SELECT 
+                    interface_name,
+                    strftime('%Y-%m-%d %H:%M:00', timestamp) as time_bucket,
+                    SUM(rx_bytes) as total_rx,
+                    SUM(tx_bytes) as total_tx
+                FROM interface_bandwidth_data 
+                WHERE router_id = ? AND timestamp >= ?
+                GROUP BY interface_name, strftime('%Y-%m-%d %H', timestamp), (strftime('%M', timestamp) / 5)
+                ORDER BY time_bucket
+            '''
+            print("Executing 5-minute interval query for interfaces")
+            c.execute(query, (router_id, threshold))
+        
+        # Organize data by interface
+        interface_data = {}
+        rows = c.fetchall()
+        print(f"Interface query returned {len(rows)} rows")
+        
+        for row in rows:
+            interface_name, time_bucket, total_rx, total_tx = row
+            
+            if interface_name not in interface_data:
+                interface_data[interface_name] = []
+            
+            interface_data[interface_name].append({
+                'timestamp': time_bucket,
+                'download_mb': (total_rx or 0) / 1024 / 1024,
+                'upload_mb': (total_tx or 0) / 1024 / 1024,
+                'total_mb': ((total_rx or 0) + (total_tx or 0)) / 1024 / 1024
+            })
+        
+        conn.close()
+        return interface_data
+        
+    except Exception as e:
+        print(f"Error in get_interface_bandwidth_data: {e}")
+        import traceback
+        traceback.print_exc()
+        conn.close()
+        return {}
+
 @app.route('/update_log_retention/<int:router_id>', methods=['POST'])
 @login_required
 def update_log_retention(router_id):
@@ -1365,6 +1465,45 @@ def api_chart_bandwidth(router_id):
         })
     except Exception as e:
         print(f"Error in chart API: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/chart/interface_bandwidth/<int:router_id>')
+@login_required
+def api_chart_interface_bandwidth(router_id):
+    """API endpoint for interface bandwidth chart data"""
+    interface_name = request.args.get('interface')
+    time_period = request.args.get('period', '1h')
+    
+    print(f"Interface chart API called: router_id={router_id}, interface={interface_name}, period={time_period}")
+    
+    if not interface_name:
+        return jsonify({'success': False, 'error': 'Interface name parameter required'}), 400
+    
+    try:
+        interface_data = get_interface_bandwidth_data(router_id, time_period)
+        
+        if interface_name in interface_data:
+            chart_data = interface_data[interface_name]
+            print(f"Interface chart data retrieved: {len(chart_data)} points for {interface_name}")
+            
+            return jsonify({
+                'success': True,
+                'data': chart_data,
+                'interface_name': interface_name,
+                'time_period': time_period
+            })
+        else:
+            return jsonify({
+                'success': True,
+                'data': [],
+                'interface_name': interface_name,
+                'time_period': time_period,
+                'message': 'No bandwidth data available for this interface'
+            })
+    except Exception as e:
+        print(f"Error in interface chart API: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
