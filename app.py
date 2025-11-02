@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify
+from flask import Flask, render_template, request, redirect, url_for, flash, session
 import sqlite3
 from datetime import datetime
 import routeros_api
@@ -292,60 +292,9 @@ def get_detailed_router_info(api):
             detailed_info['license'] = {}
             print(f"Warning: Could not get license information: {e}")
         
-        # Get system logs
-        try:
-            logs = api.get_resource('/log')
-            detailed_info['logs'] = logs.get() if logs.get() else []
-            print(f"System logs found: {len(detailed_info['logs'])}")
-        except Exception as e:
-            detailed_info['logs'] = []
-            print(f"Warning: Could not get system logs: {e}")
-        
         return detailed_info
     except Exception as e:
         return {'error': str(e)}
-
-def get_log_statistics(logs):
-    """Analyze logs and return statistics by category and severity"""
-    stats = {
-        'total': len(logs),
-        'categories': {},
-        'severities': {
-            'critical': 0,
-            'warning': 0,
-            'info': 0,
-            'error': 0,
-            'debug': 0,
-            'other': 0
-        }
-    }
-    
-    for log in logs:
-        # Count by category (topics)
-        category = log.get('topics', 'other')
-        if category not in stats['categories']:
-            stats['categories'][category] = 0
-        stats['categories'][category] += 1
-        
-        # Count by severity
-        message = log.get('message', '').lower()
-        if 'critical' in message or 'fatal' in message or 'emergency' in message:
-            stats['severities']['critical'] += 1
-        elif 'warning' in message or 'warn' in message:
-            stats['severities']['warning'] += 1
-        elif 'error' in message or 'err' in message:
-            stats['severities']['error'] += 1
-        elif 'info' in message:
-            stats['severities']['info'] += 1
-        elif 'debug' in message:
-            stats['severities']['debug'] += 1
-        else:
-            stats['severities']['other'] += 1
-    
-    # Sort categories by count (descending)
-    stats['categories'] = dict(sorted(stats['categories'].items(), key=lambda x: x[1], reverse=True))
-    
-    return stats
 
 def collect_ip_bandwidth_data(router_id, api):
     """Collect per-IP bandwidth data using MikroTik traffic monitoring - focus on internal IPs"""
@@ -799,9 +748,6 @@ def monitor_router(router_id):
         # Get detailed router information for the monitor page
         detailed_info = get_detailed_router_info(api)
         
-        # Get log statistics
-        log_stats = get_log_statistics(detailed_info.get('logs', []))
-        
         connection.disconnect()
         
         if 'error' in detailed_info:
@@ -832,7 +778,6 @@ def monitor_router(router_id):
                              router={'id': router_id, 'name': name, 'host': host, 'port': port},
                              info=detailed_info,
                              bandwidth_stats=bandwidth_stats,
-                             log_stats=log_stats,
                              selected_period=selected_period,
                              time_periods=time_periods)
     else:
@@ -889,165 +834,6 @@ def api_monitor_router(router_id):
             return jsonify({'success': False, 'error': str(e)}), 500
     else:
         return jsonify({'success': False, 'error': error}), 500
-
-def get_ip_bandwidth_history(router_id, ip_address, time_period):
-    """Get historical bandwidth data for a specific IP address for charting"""
-    import datetime
-    
-    # Define time periods in minutes
-    periods = {
-        '1h': 60,
-        '3h': 180,
-        '6h': 360,
-        '12h': 720,
-        '24h': 1440,
-        '3d': 4320,
-        '1w': 10080
-    }
-    
-    if time_period not in periods:
-        return {'error': 'Invalid time period'}
-    
-    period_minutes = periods[time_period]
-    threshold = (datetime.datetime.now() - datetime.timedelta(minutes=period_minutes)).strftime('%Y-%m-%d %H:%M:%S')
-    
-    print(f"Chart query: router_id={router_id}, ip={ip_address}, period={time_period}, threshold={threshold}")
-    
-    conn = sqlite3.connect(db_path)
-    c = conn.cursor()
-    
-    try:
-        # Get data points grouped by time intervals
-        if time_period in ['1h', '3h']:
-            # For shorter periods, group by minute
-            query = '''
-                SELECT 
-                    strftime('%Y-%m-%d %H:%M:00', timestamp) as time_bucket,
-                    SUM(rx_bytes) as total_rx,
-                    SUM(tx_bytes) as total_tx
-                FROM ip_bandwidth_data 
-                WHERE router_id = ? AND ip_address = ? AND timestamp >= ?
-                GROUP BY time_bucket
-                ORDER BY time_bucket
-            '''
-            print("Executing 1-minute interval query")
-            c.execute(query, (router_id, ip_address, threshold))
-        else:
-            # For longer periods, group by 5-minute intervals
-            query = '''
-                SELECT 
-                    strftime('%Y-%m-%d %H:%M:00', timestamp) as time_bucket,
-                    SUM(rx_bytes) as total_rx,
-                    SUM(tx_bytes) as total_tx
-                FROM ip_bandwidth_data 
-                WHERE router_id = ? AND ip_address = ? AND timestamp >= ?
-                GROUP BY strftime('%Y-%m-%d %H', timestamp), (strftime('%M', timestamp) / 5)
-                ORDER BY time_bucket
-            '''
-            print("Executing 5-minute interval query")
-            c.execute(query, (router_id, ip_address, threshold))
-        
-        data_points = []
-        rows = c.fetchall()
-        print(f"Query returned {len(rows)} rows")
-        
-        for row in rows:
-            time_bucket, total_rx, total_tx = row
-            data_points.append({
-                'timestamp': time_bucket,
-                'download_mb': (total_rx or 0) / 1024 / 1024,
-                'upload_mb': (total_tx or 0) / 1024 / 1024,
-                'total_mb': ((total_rx or 0) + (total_tx or 0)) / 1024 / 1024
-            })
-        
-        conn.close()
-        return data_points
-        
-    except Exception as e:
-        print(f"Error in get_ip_bandwidth_history: {e}")
-        import traceback
-        traceback.print_exc()
-        conn.close()
-        raise
-
-@app.route('/api/chart/bandwidth/<int:router_id>')
-@login_required
-def api_chart_bandwidth(router_id):
-    """API endpoint for bandwidth chart data"""
-    ip_address = request.args.get('ip')
-    time_period = request.args.get('period', '1h')
-    
-    print(f"Chart API called: router_id={router_id}, ip={ip_address}, period={time_period}")
-    
-    if not ip_address:
-        return jsonify({'success': False, 'error': 'IP address parameter required'}), 400
-    
-    try:
-        chart_data = get_ip_bandwidth_history(router_id, ip_address, time_period)
-        print(f"Chart data retrieved: {len(chart_data) if chart_data else 0} points")
-        
-        # Check if we have any data
-        if not chart_data:
-            return jsonify({
-                'success': True,
-                'data': [],
-                'ip_address': ip_address,
-                'time_period': time_period,
-                'message': 'No bandwidth data available for the selected time period'
-            })
-        
-        return jsonify({
-            'success': True,
-            'data': chart_data,
-            'ip_address': ip_address,
-            'time_period': time_period
-        })
-    except Exception as e:
-        print(f"Error in chart API: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/router_logs/<int:router_id>')
-@login_required
-def router_logs(router_id):
-    """Page to show all router logs"""
-    conn = sqlite3.connect(db_path)
-    c = conn.cursor()
-    c.execute('SELECT * FROM routers WHERE id = ?', (router_id,))
-    router = c.fetchone()
-    conn.close()
-    
-    if not router:
-        flash('Router not found', 'error')
-        return redirect(url_for('index'))
-    
-    router_id, name, host, port, username, password, created_at = router
-    api, connection, error = connect_to_router(host, port, username, password)
-    
-    if api:
-        try:
-            # Get system logs
-            logs_resource = api.get_resource('/log')
-            logs = logs_resource.get() if logs_resource.get() else []
-            
-            # Get log statistics
-            log_stats = get_log_statistics(logs)
-            
-            connection.disconnect()
-            
-            return render_template('router_logs.html', 
-                                 router={'id': router_id, 'name': name, 'host': host, 'port': port},
-                                 logs=logs,
-                                 log_stats=log_stats)
-        except Exception as e:
-            if connection:
-                connection.disconnect()
-            flash(f'Error getting logs: {str(e)}', 'error')
-            return redirect(url_for('monitor_router', router_id=router_id))
-    else:
-        flash(f'Failed to connect to router: {error}', 'error')
-        return redirect(url_for('monitor_router', router_id=router_id))
 
 if __name__ == '__main__':
     init_db()
