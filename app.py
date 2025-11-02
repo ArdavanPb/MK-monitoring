@@ -105,11 +105,38 @@ def init_db():
                 c.execute("ALTER TABLE router_status_cache ADD COLUMN router_info TEXT")
                 print("Added router_info column to router_status_cache table")
         
+        # Create system logs table for storing router logs
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS router_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                router_id INTEGER NOT NULL,
+                timestamp TEXT NOT NULL,
+                topics TEXT,
+                message TEXT NOT NULL,
+                severity TEXT,
+                stored_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (router_id) REFERENCES routers (id)
+            )
+        ''')
+        
+        # Create log retention settings table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS log_retention_settings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                router_id INTEGER NOT NULL,
+                retention_days INTEGER DEFAULT 7,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (router_id) REFERENCES routers (id)
+            )
+        ''')
+        
         # Create index for faster queries
         c.execute('CREATE INDEX IF NOT EXISTS idx_ip_bandwidth_router_time ON ip_bandwidth_data (router_id, timestamp)')
         c.execute('CREATE INDEX IF NOT EXISTS idx_ip_bandwidth_ip ON ip_bandwidth_data (ip_address)')
         c.execute('CREATE INDEX IF NOT EXISTS idx_ip_bandwidth_mac ON ip_bandwidth_data (mac_address)')
         c.execute('CREATE INDEX IF NOT EXISTS idx_router_status_time ON router_status_cache (last_checked)')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_router_logs_time ON router_logs (router_id, timestamp)')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_router_logs_severity ON router_logs (severity)')
         
         conn.commit()
         conn.close()
@@ -482,6 +509,149 @@ def get_log_statistics(logs):
     stats['categories'] = dict(sorted(stats['categories'].items(), key=lambda x: x[1], reverse=True))
     
     return stats
+
+def save_router_logs(router_id, logs):
+    """Save router logs to database"""
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    
+    saved_count = 0
+    for log in logs:
+        timestamp = log.get('time', '')
+        topics = log.get('topics', '')
+        message = log.get('message', '')
+        
+        # Determine severity
+        message_lower = message.lower()
+        if 'critical' in message_lower or 'fatal' in message_lower or 'emergency' in message_lower:
+            severity = 'critical'
+        elif 'warning' in message_lower or 'warn' in message_lower:
+            severity = 'warning'
+        elif 'error' in message_lower or 'err' in message_lower:
+            severity = 'error'
+        elif 'info' in message_lower:
+            severity = 'info'
+        elif 'debug' in message_lower:
+            severity = 'debug'
+        else:
+            severity = 'other'
+        
+        # Check if log already exists (based on timestamp and message)
+        c.execute('SELECT id FROM router_logs WHERE router_id = ? AND timestamp = ? AND message = ?',
+                 (router_id, timestamp, message))
+        existing = c.fetchone()
+        
+        if not existing:
+            c.execute('''
+                INSERT INTO router_logs (router_id, timestamp, topics, message, severity)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (router_id, timestamp, topics, message, severity))
+            saved_count += 1
+    
+    conn.commit()
+    conn.close()
+    
+    print(f"Saved {saved_count} new logs for router {router_id}")
+    return saved_count
+
+def get_log_retention_settings(router_id):
+    """Get log retention settings for a router"""
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    
+    c.execute('SELECT retention_days FROM log_retention_settings WHERE router_id = ?', (router_id,))
+    result = c.fetchone()
+    
+    conn.close()
+    
+    if result:
+        return result[0]
+    else:
+        # Default to 7 days if no setting exists
+        return 7
+
+def update_log_retention_settings(router_id, retention_days):
+    """Update log retention settings for a router"""
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    
+    c.execute('''
+        INSERT OR REPLACE INTO log_retention_settings (router_id, retention_days)
+        VALUES (?, ?)
+    ''', (router_id, retention_days))
+    
+    conn.commit()
+    conn.close()
+    
+    print(f"Updated log retention to {retention_days} days for router {router_id}")
+
+def cleanup_old_logs(router_id):
+    """Delete logs older than retention period"""
+    import datetime
+    
+    retention_days = get_log_retention_settings(router_id)
+    cutoff_date = datetime.datetime.now() - datetime.timedelta(days=retention_days)
+    
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    
+    # Convert cutoff_date to string format for comparison
+    cutoff_str = cutoff_date.strftime('%Y-%m-%d %H:%M:%S')
+    
+    c.execute('DELETE FROM router_logs WHERE router_id = ? AND stored_at < ?', 
+              (router_id, cutoff_str))
+    deleted_count = c.rowcount
+    
+    conn.commit()
+    conn.close()
+    
+    print(f"Cleaned up {deleted_count} old logs for router {router_id} (retention: {retention_days} days)")
+    return deleted_count
+
+def get_paginated_logs(router_id, page=1, per_page=50, severity_filter=None, search_term=None):
+    """Get paginated logs with optional filtering"""
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    
+    # Build query with filters
+    query = 'SELECT * FROM router_logs WHERE router_id = ?'
+    params = [router_id]
+    
+    if severity_filter and severity_filter != 'all':
+        query += ' AND severity = ?'
+        params.append(severity_filter)
+    
+    if search_term:
+        query += ' AND (message LIKE ? OR topics LIKE ?)'
+        params.extend([f'%{search_term}%', f'%{search_term}%'])
+    
+    # Get total count
+    count_query = query.replace('SELECT *', 'SELECT COUNT(*)')
+    c.execute(count_query, params)
+    total_logs = c.fetchone()[0]
+    
+    # Add ordering and pagination
+    query += ' ORDER BY timestamp DESC LIMIT ? OFFSET ?'
+    offset = (page - 1) * per_page
+    params.extend([per_page, offset])
+    
+    c.execute(query, params)
+    logs = c.fetchall()
+    
+    conn.close()
+    
+    # Calculate pagination info
+    total_pages = (total_logs + per_page - 1) // per_page
+    
+    return {
+        'logs': logs,
+        'total_logs': total_logs,
+        'page': page,
+        'per_page': per_page,
+        'total_pages': total_pages,
+        'has_prev': page > 1,
+        'has_next': page < total_pages
+    }
 
 def collect_ip_bandwidth_data(router_id, api):
     """Collect per-IP bandwidth data using MikroTik traffic monitoring - focus on internal IPs"""
@@ -1073,6 +1243,94 @@ def get_ip_bandwidth_history(router_id, ip_address, time_period):
         conn.close()
         raise
 
+@app.route('/update_log_retention/<int:router_id>', methods=['POST'])
+@login_required
+def update_log_retention(router_id):
+    """Update log retention settings"""
+    retention_days = request.form.get('retention_days', 7, type=int)
+    
+    # Validate retention days
+    valid_retention = [1, 3, 7, 30, 90]
+    if retention_days not in valid_retention:
+        flash('Invalid retention period', 'error')
+        return redirect(url_for('router_logs', router_id=router_id))
+    
+    update_log_retention_settings(router_id, retention_days)
+    
+    # Clean up old logs immediately after updating retention
+    cleanup_old_logs(router_id)
+    
+    flash(f'Log retention updated to {retention_days} days', 'success')
+    return redirect(url_for('router_logs', router_id=router_id))
+
+@app.route('/export_logs_csv/<int:router_id>')
+@login_required
+def export_logs_csv(router_id):
+    """Export router logs as CSV file"""
+    import csv
+    import io
+    from datetime import datetime
+    
+    # Get filter parameters
+    severity_filter = request.args.get('severity', 'all')
+    search_term = request.args.get('search', '')
+    
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    
+    # Build query with filters
+    query = 'SELECT timestamp, topics, message, severity, stored_at FROM router_logs WHERE router_id = ?'
+    params = [router_id]
+    
+    if severity_filter and severity_filter != 'all':
+        query += ' AND severity = ?'
+        params.append(severity_filter)
+    
+    if search_term:
+        query += ' AND (message LIKE ? OR topics LIKE ?)'
+        params.extend([f'%{search_term}%', f'%{search_term}%'])
+    
+    query += ' ORDER BY timestamp DESC'
+    
+    c.execute(query, params)
+    logs = c.fetchall()
+    conn.close()
+    
+    # Get router name for filename
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    c.execute('SELECT name FROM routers WHERE id = ?', (router_id,))
+    router_name = c.fetchone()[0]
+    conn.close()
+    
+    # Create CSV in memory
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # Write header
+    writer.writerow(['Timestamp', 'Category', 'Message', 'Severity', 'Stored At', 'Router Name'])
+    
+    # Write data
+    for log in logs:
+        timestamp, topics, message, severity, stored_at = log
+        writer.writerow([timestamp, topics, message, severity, stored_at, router_name])
+    
+    # Prepare response
+    output.seek(0)
+    
+    # Create filename with timestamp
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    filename = f"{router_name}_logs_{timestamp}.csv"
+    
+    response = app.response_class(
+        response=output.getvalue(),
+        status=200,
+        mimetype='text/csv',
+        headers={'Content-Disposition': f'attachment; filename={filename}'}
+    )
+    
+    return response
+
 @app.route('/api/chart/bandwidth/<int:router_id>')
 @login_required
 def api_chart_bandwidth(router_id):
@@ -1114,7 +1372,12 @@ def api_chart_bandwidth(router_id):
 @app.route('/router_logs/<int:router_id>')
 @login_required
 def router_logs(router_id):
-    """Page to show all router logs"""
+    """Page to show all router logs with pagination and retention settings"""
+    # Get page and filter parameters
+    page = request.args.get('page', 1, type=int)
+    severity_filter = request.args.get('severity', 'all')
+    search_term = request.args.get('search', '')
+    
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
     c.execute('SELECT * FROM routers WHERE id = ?', (router_id,))
@@ -1126,31 +1389,70 @@ def router_logs(router_id):
         return redirect(url_for('index'))
     
     router_id, name, host, port, username, password, created_at = router
-    api, connection, error = connect_to_router(host, port, username, password)
     
+    # Try to get fresh logs from router
+    api, connection, error = connect_to_router(host, port, username, password)
     if api:
         try:
-            # Get system logs
+            # Get system logs from router
             logs_resource = api.get_resource('/log')
-            logs = logs_resource.get() if logs_resource.get() else []
+            fresh_logs = logs_resource.get() if logs_resource.get() else []
             
-            # Get log statistics
-            log_stats = get_log_statistics(logs)
+            # Save fresh logs to database
+            saved_count = save_router_logs(router_id, fresh_logs)
+            
+            # Clean up old logs based on retention settings
+            cleanup_old_logs(router_id)
             
             connection.disconnect()
             
-            return render_template('router_logs.html', 
-                                 router={'id': router_id, 'name': name, 'host': host, 'port': port},
-                                 logs=logs,
-                                 log_stats=log_stats)
+            if saved_count > 0:
+                flash(f'Updated {saved_count} new logs from router', 'success')
         except Exception as e:
             if connection:
                 connection.disconnect()
-            flash(f'Error getting logs: {str(e)}', 'error')
-            return redirect(url_for('monitor_router', router_id=router_id))
-    else:
-        flash(f'Failed to connect to router: {error}', 'error')
-        return redirect(url_for('monitor_router', router_id=router_id))
+            print(f"Warning: Could not fetch fresh logs: {e}")
+    
+    # Get paginated logs from database
+    pagination_data = get_paginated_logs(router_id, page, 50, severity_filter, search_term)
+    
+    # Get log statistics from database
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    
+    # Get total statistics
+    c.execute('SELECT COUNT(*) FROM router_logs WHERE router_id = ?', (router_id,))
+    total_logs = c.fetchone()[0]
+    
+    # Get severity statistics
+    c.execute('SELECT severity, COUNT(*) FROM router_logs WHERE router_id = ? GROUP BY severity', (router_id,))
+    severity_stats = {}
+    for severity, count in c.fetchall():
+        severity_stats[severity] = count
+    
+    # Get category statistics
+    c.execute('SELECT topics, COUNT(*) FROM router_logs WHERE router_id = ? GROUP BY topics', (router_id,))
+    category_stats = {}
+    for category, count in c.fetchall():
+        category_stats[category] = count
+    
+    conn.close()
+    
+    # Get retention settings
+    retention_days = get_log_retention_settings(router_id)
+    
+    return render_template('router_logs.html', 
+                         router={'id': router_id, 'name': name, 'host': host, 'port': port},
+                         logs=pagination_data['logs'],
+                         log_stats={
+                             'total': total_logs,
+                             'severities': severity_stats,
+                             'categories': category_stats
+                         },
+                         pagination=pagination_data,
+                         retention_days=retention_days,
+                         current_severity=severity_filter,
+                         current_search=search_term)
 
 if __name__ == '__main__':
     init_db()

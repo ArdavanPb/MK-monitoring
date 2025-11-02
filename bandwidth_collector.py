@@ -8,7 +8,7 @@ import routeros_api
 import time
 import schedule
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 
 # Use absolute path for Docker compatibility
@@ -135,6 +135,11 @@ def collect_all_routers_bandwidth():
                 # Collect per-IP bandwidth data
                 collect_ip_bandwidth_data(router_id, api)
                 
+                # Collect and save logs every 5 minutes
+                current_minute = datetime.now().minute
+                if current_minute % 5 == 0:  # Collect logs every 5 minutes
+                    collect_router_logs(router_id, api)
+                
                 connection.disconnect()
                 print(f"[{datetime.now()}] Successfully collected data for {name}")
                 
@@ -159,6 +164,115 @@ def update_router_status_offline(router_id):
         conn.close()
     except Exception as e:
         print(f"Error updating router status cache: {e}")
+
+def collect_router_logs(router_id, api):
+    """Collect and save router logs"""
+    try:
+        # Get system logs from router
+        logs_resource = api.get_resource('/log')
+        logs = logs_resource.get() if logs_resource.get() else []
+        
+        if logs:
+            saved_count = save_router_logs(router_id, logs)
+            print(f"[{datetime.now()}] Saved {saved_count} new logs for router {router_id}")
+            
+            # Clean up old logs based on retention settings
+            cleanup_old_logs(router_id)
+        else:
+            print(f"[{datetime.now()}] No logs found for router {router_id}")
+            
+    except Exception as e:
+        print(f"[{datetime.now()}] Error collecting logs for router {router_id}: {e}")
+
+def save_router_logs(router_id, logs):
+    """Save router logs to database"""
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    
+    saved_count = 0
+    for log in logs:
+        timestamp = log.get('time', '')
+        topics = log.get('topics', '')
+        message = log.get('message', '')
+        
+        # Determine severity
+        message_lower = message.lower()
+        if 'critical' in message_lower or 'fatal' in message_lower or 'emergency' in message_lower:
+            severity = 'critical'
+        elif 'warning' in message_lower or 'warn' in message_lower:
+            severity = 'warning'
+        elif 'error' in message_lower or 'err' in message_lower:
+            severity = 'error'
+        elif 'info' in message_lower:
+            severity = 'info'
+        elif 'debug' in message_lower:
+            severity = 'debug'
+        else:
+            severity = 'other'
+        
+        # Check if log already exists (based on timestamp and message)
+        c.execute('SELECT id FROM router_logs WHERE router_id = ? AND timestamp = ? AND message = ?',
+                 (router_id, timestamp, message))
+        existing = c.fetchone()
+        
+        if not existing:
+            c.execute('''
+                INSERT INTO router_logs (router_id, timestamp, topics, message, severity)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (router_id, timestamp, topics, message, severity))
+            saved_count += 1
+    
+    conn.commit()
+    conn.close()
+    
+    return saved_count
+
+def get_log_retention_settings(router_id):
+    """Get log retention settings for a router"""
+    try:
+        conn = sqlite3.connect(db_path)
+        c = conn.cursor()
+        
+        c.execute('SELECT retention_days FROM log_retention_settings WHERE router_id = ?', (router_id,))
+        result = c.fetchone()
+        
+        conn.close()
+        
+        if result:
+            return result[0]
+        else:
+            # Default to 7 days if no setting exists
+            return 7
+    except Exception as e:
+        print(f"Error getting log retention settings: {e}")
+        return 7
+
+def cleanup_old_logs(router_id):
+    """Delete logs older than retention period"""
+    try:
+        retention_days = get_log_retention_settings(router_id)
+        cutoff_date = datetime.now() - datetime.timedelta(days=retention_days)
+        
+        conn = sqlite3.connect(db_path)
+        c = conn.cursor()
+        
+        # Convert cutoff_date to string format for comparison
+        cutoff_str = cutoff_date.strftime('%Y-%m-%d %H:%M:%S')
+        
+        c.execute('DELETE FROM router_logs WHERE router_id = ? AND stored_at < ?', 
+                  (router_id, cutoff_str))
+        deleted_count = c.rowcount
+        
+        conn.commit()
+        conn.close()
+        
+        if deleted_count > 0:
+            print(f"[{datetime.now()}] Cleaned up {deleted_count} old logs for router {router_id} (retention: {retention_days} days)")
+        
+        return deleted_count
+    except Exception as e:
+        print(f"Error cleaning up old logs: {e}")
+        return 0
 
 def collect_ip_bandwidth_data(router_id, api):
     """Collect per-IP bandwidth data using interface statistics with delta tracking"""
