@@ -157,14 +157,40 @@ def get_router_info(api):
         
         # Debug log the available resource fields
         print(f"Available resource fields: {list(resource_data.keys())}")
+        print(f"Memory fields - Total: {resource_data.get('total-memory', 'N/A')}, Used: {resource_data.get('used-memory', 'N/A')}, Free: {resource_data.get('free-memory', 'N/A')}")
+        print(f"Alternative memory fields - Size: {resource_data.get('memory-size', 'N/A')}, Used: {resource_data.get('memory-used', 'N/A')}, Free: {resource_data.get('memory-free', 'N/A')}")
         
         # Get uptime
         uptime = resource_data.get('uptime', 'N/A')
         
-        # Get memory info
+        # Get memory info with fallbacks
         total_memory = resource_data.get('total-memory', 'N/A')
+        if total_memory == 'N/A':
+            total_memory = resource_data.get('total_memory', 'N/A')
+        if total_memory == 'N/A':
+            total_memory = resource_data.get('memory-size', 'N/A')
+        
         free_memory = resource_data.get('free-memory', 'N/A')
+        if free_memory == 'N/A':
+            free_memory = resource_data.get('free_memory', 'N/A')
+        if free_memory == 'N/A':
+            free_memory = resource_data.get('memory-free', 'N/A')
+        
         used_memory = resource_data.get('used-memory', 'N/A')
+        if used_memory == 'N/A':
+            used_memory = resource_data.get('used_memory', 'N/A')
+        if used_memory == 'N/A':
+            used_memory = resource_data.get('memory-used', 'N/A')
+        
+        # Calculate used memory from total and free if not available
+        if used_memory == 'N/A' and total_memory != 'N/A' and free_memory != 'N/A':
+            try:
+                total = int(total_memory)
+                free = int(free_memory)
+                used_memory = str(total - free)
+                print(f"Calculated used memory: {used_memory} (total: {total_memory} - free: {free_memory})")
+            except (ValueError, TypeError):
+                used_memory = 'N/A'
         
         # Get CPU info - try multiple CPU load fields
         cpu_load = resource_data.get('cpu-load', 'N/A')
@@ -269,17 +295,55 @@ def get_detailed_router_info(api):
             if board_name == 'N/A':
                 board_name = resource_data.get('hardware', 'N/A')
             
+            # Ensure memory fields are set with fallbacks
+            total_memory = resource_data.get('total-memory', 'N/A')
+            if total_memory == 'N/A':
+                total_memory = resource_data.get('total_memory', 'N/A')
+            if total_memory == 'N/A':
+                total_memory = resource_data.get('memory-size', 'N/A')
+            
+            free_memory = resource_data.get('free-memory', 'N/A')
+            if free_memory == 'N/A':
+                free_memory = resource_data.get('free_memory', 'N/A')
+            if free_memory == 'N/A':
+                free_memory = resource_data.get('memory-free', 'N/A')
+            
+            used_memory = resource_data.get('used-memory', 'N/A')
+            if used_memory == 'N/A':
+                used_memory = resource_data.get('used_memory', 'N/A')
+            if used_memory == 'N/A':
+                used_memory = resource_data.get('memory-used', 'N/A')
+            
+            # Calculate used memory from total and free if not available
+            if used_memory == 'N/A' and total_memory != 'N/A' and free_memory != 'N/A':
+                try:
+                    total = int(total_memory)
+                    free = int(free_memory)
+                    used_memory = str(total - free)
+                    print(f"Calculated used memory: {used_memory} (total: {total_memory} - free: {free_memory})")
+                except (ValueError, TypeError):
+                    used_memory = 'N/A'
+            
             # Add the corrected values back to resource data
             resource_data['cpu_load'] = cpu_load
             resource_data['cpu_count'] = cpu_count
             resource_data['architecture_name'] = architecture_name
             resource_data['board_name'] = board_name
+            resource_data['total_memory'] = total_memory
+            resource_data['used_memory'] = used_memory
+            resource_data['free_memory'] = free_memory
             detailed_info['resources'] = resource_data
             
             # Debug log specific values we're looking for
             print(f"CPU count: {resource_data.get('cpu-count', 'N/A')}")
             print(f"Architecture: {resource_data.get('architecture-name', 'N/A')}")
             print(f"Board name: {resource_data.get('board-name', 'N/A')}")
+            print(f"Total memory: {resource_data.get('total-memory', 'N/A')}")
+            print(f"Used memory: {resource_data.get('used-memory', 'N/A')}")
+            print(f"Free memory: {resource_data.get('free-memory', 'N/A')}")
+            print(f"Memory size: {resource_data.get('memory-size', 'N/A')}")
+            print(f"Memory used: {resource_data.get('memory-used', 'N/A')}")
+            print(f"Memory free: {resource_data.get('memory-free', 'N/A')}")
             
         except Exception as e:
             detailed_info['resources'] = {}

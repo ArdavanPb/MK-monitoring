@@ -93,7 +93,7 @@
                     <tr>
                         <th>Memory Usage:</th>
                         <td>
-                            {% if info.resources.total_memory and info.resources.used_memory %}
+                            {% if info.resources.total_memory and info.resources.total_memory != 'N/A' and info.resources.used_memory and info.resources.used_memory != 'N/A' %}
                                 {% set total_mem = info.resources.total_memory|int / 1024 / 1024 %}
                                 {% set used_mem = info.resources.used_memory|int / 1024 / 1024 %}
                                 {% set usage_percent = (used_mem / total_mem * 100)|round(1) %}
@@ -116,7 +116,7 @@
                     <tr>
                         <th>Free Memory:</th>
                         <td>
-                            {% if info.resources.free_memory %}
+                            {% if info.resources.free_memory and info.resources.free_memory != 'N/A' %}
                                 {{ (info.resources.free_memory|int / 1024 / 1024)|round(1) }}MB
                             {% else %}
                                 <span class="text-muted">N/A</span>
