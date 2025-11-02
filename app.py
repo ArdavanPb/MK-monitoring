@@ -155,6 +155,9 @@ def get_router_info(api):
         resources = api.get_resource('/system/resource')
         resource_data = resources.get()[0] if resources.get() else {}
         
+        # Debug log the available resource fields
+        print(f"Available resource fields: {list(resource_data.keys())}")
+        
         # Get uptime
         uptime = resource_data.get('uptime', 'N/A')
         
@@ -163,9 +166,15 @@ def get_router_info(api):
         free_memory = resource_data.get('free-memory', 'N/A')
         used_memory = resource_data.get('used-memory', 'N/A')
         
-        # Get CPU info
+        # Get CPU info - try multiple CPU load fields
         cpu_load = resource_data.get('cpu-load', 'N/A')
+        if cpu_load == 'N/A':
+            # Try alternative CPU load fields
+            cpu_load = resource_data.get('cpu', 'N/A')
+        
         cpu_count = resource_data.get('cpu-count', 'N/A')
+        if cpu_count == 'N/A':
+            cpu_count = resource_data.get('cpu-core-count', 'N/A')
         cpu_frequency = resource_data.get('cpu-frequency', 'N/A')
         
         # Get firmware version
@@ -173,7 +182,13 @@ def get_router_info(api):
         
         # Get board information
         board_name = resource_data.get('board-name', 'N/A')
+        if board_name == 'N/A':
+            board_name = resource_data.get('hardware', 'N/A')
+        
         architecture_name = resource_data.get('architecture-name', 'N/A')
+        if architecture_name == 'N/A':
+            architecture_name = resource_data.get('cpu-architecture', 'N/A')
+        
         platform = resource_data.get('platform', 'N/A')
         
         # Get system package information
@@ -189,7 +204,7 @@ def get_router_info(api):
             except (ValueError, ZeroDivisionError):
                 memory_usage_percent = 'N/A'
         
-        return {
+        result = {
             'name': router_name,
             'uptime': uptime,
             'total_memory': total_memory,
@@ -206,7 +221,13 @@ def get_router_info(api):
             'build_time': build_time,
             'factory_software': factory_software
         }
+        
+        # Debug log the final result
+        print(f"Router info result: {result}")
+        
+        return result
     except Exception as e:
+        print(f"Error in get_router_info: {e}")
         return {'error': str(e)}
 
 def get_detailed_router_info(api):
@@ -224,15 +245,66 @@ def get_detailed_router_info(api):
         # Get system resources
         try:
             resources = api.get_resource('/system/resource')
-            detailed_info['resources'] = resources.get()[0] if resources.get() else {}
+            resource_data = resources.get()[0] if resources.get() else {}
+            
+            # Debug log available resource fields
+            print(f"Detailed router info - Available resource fields: {list(resource_data.keys())}")
+            
+            # Try multiple CPU load fields
+            cpu_load = resource_data.get('cpu-load', 'N/A')
+            if cpu_load == 'N/A':
+                cpu_load = resource_data.get('cpu', 'N/A')
+            
+            # Ensure CPU count is set
+            cpu_count = resource_data.get('cpu-count', 'N/A')
+            if cpu_count == 'N/A':
+                cpu_count = resource_data.get('cpu-core-count', 'N/A')
+            
+            # Ensure architecture and board name are set
+            architecture_name = resource_data.get('architecture-name', 'N/A')
+            if architecture_name == 'N/A':
+                architecture_name = resource_data.get('cpu-architecture', 'N/A')
+            
+            board_name = resource_data.get('board-name', 'N/A')
+            if board_name == 'N/A':
+                board_name = resource_data.get('hardware', 'N/A')
+            
+            # Add the corrected values back to resource data
+            resource_data['cpu_load'] = cpu_load
+            resource_data['cpu_count'] = cpu_count
+            resource_data['architecture_name'] = architecture_name
+            resource_data['board_name'] = board_name
+            detailed_info['resources'] = resource_data
+            
+            # Debug log specific values we're looking for
+            print(f"CPU count: {resource_data.get('cpu-count', 'N/A')}")
+            print(f"Architecture: {resource_data.get('architecture-name', 'N/A')}")
+            print(f"Board name: {resource_data.get('board-name', 'N/A')}")
+            
         except Exception as e:
             detailed_info['resources'] = {}
             print(f"Warning: Could not get system resources: {e}")
         
-        # Get system clock
+        # Get system clock and timezone
         try:
             clock = api.get_resource('/system/clock')
-            detailed_info['clock'] = clock.get()[0] if clock.get() else {}
+            clock_data = clock.get()[0] if clock.get() else {}
+            
+            # Debug log available clock fields
+            print(f"Available clock fields: {list(clock_data.keys())}")
+            
+            # Try to get timezone from different fields
+            timezone = clock_data.get('time-zone-name', 'N/A')
+            if timezone == 'N/A':
+                timezone = clock_data.get('time-zone-autodetect', 'N/A')
+            if timezone == 'N/A':
+                timezone = clock_data.get('time-zone', 'N/A')
+            
+            # Add timezone to clock data
+            clock_data['time_zone_name'] = timezone
+            detailed_info['clock'] = clock_data
+            
+            print(f"Timezone result: {timezone}")
         except Exception as e:
             detailed_info['clock'] = {}
             print(f"Warning: Could not get system clock: {e}")
@@ -582,39 +654,6 @@ def index():
         return redirect(url_for('login'))
     
     # Show dashboard if authenticated
-    conn = sqlite3.connect(db_path)
-    c = conn.cursor()
-    c.execute('SELECT * FROM routers ORDER BY created_at DESC')
-    routers = c.fetchall()
-    conn.close()
-    
-    router_data = []
-    for router in routers:
-        router_id, name, host, port, username, password, created_at = router
-        api, connection, error = connect_to_router(host, port, username, password)
-        
-        if api:
-            info = get_router_info(api)
-            connection.disconnect()
-            router_data.append({
-                'id': router_id,
-                'name': name,
-                'host': host,
-                'port': port,
-                'info': info,
-                'status': 'online'
-            })
-        else:
-            router_data.append({
-                'id': router_id,
-                'name': name,
-                'host': host,
-                'port': port,
-                'info': {'error': error or 'Connection failed'},
-                'status': 'offline'
-            })
-    
-    return render_template('index.html', routers=router_data)
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
     c.execute('SELECT * FROM routers ORDER BY created_at DESC')

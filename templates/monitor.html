@@ -80,12 +80,10 @@
                             {% endif %}
                         </td>
                     </tr>
-                    {% if info.resources.cpu_count %}
                     <tr>
                         <th>CPU Cores:</th>
-                        <td>{{ info.resources.cpu_count }}</td>
+                        <td>{{ info.resources.cpu_count if info.resources.cpu_count else 'N/A' }}</td>
                     </tr>
-                    {% endif %}
                     {% if info.resources.cpu_frequency %}
                     <tr>
                         <th>CPU Frequency:</th>
@@ -149,10 +147,6 @@
                     <tr>
                         <th>Timezone:</th>
                         <td>{{ info.clock.time_zone_name if info.clock.time_zone_name else 'N/A' }}</td>
-                    </tr>
-                    <tr>
-                        <th>Uptime:</th>
-                        <td>{{ info.clock.uptime if info.clock.uptime else 'N/A' }}</td>
                     </tr>
                 </table>
             </div>

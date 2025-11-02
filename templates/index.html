@@ -66,11 +66,7 @@
                         </div>
                         <div class="mb-2">
                             <strong>CPU:</strong> 
-                            {% if router.info.cpu_count != 'N/A' %}
-                                {{ router.info.cpu_count }} core{% if router.info.cpu_count|int > 1 %}s{% endif %}
-                            {% else %}
-                                N/A
-                            {% endif %}
+                            {{ router.info.cpu_count if router.info.cpu_count != 'N/A' else 'N/A' }} core{% if router.info.cpu_count != 'N/A' and router.info.cpu_count|int > 1 %}s{% endif %}
                             {% if router.info.cpu_frequency != 'N/A' %}
                                 @ {{ router.info.cpu_frequency }} MHz
                             {% endif %}
