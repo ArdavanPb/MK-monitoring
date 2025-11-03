@@ -583,9 +583,9 @@
                         <thead>
                             <tr>
                                 <th>IP Address</th>
-                                <th>Upload (MB)</th>
-                                <th>Download (MB)</th>
-                                <th>Total (MB)</th>
+                                <th>Upload (Mbps)</th>
+                                <th>Download (Mbps)</th>
+                                <th>Total (Mbps)</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -593,25 +593,27 @@
                             <tr style="cursor: pointer;" onclick="showBandwidthChart('{{ ip_address }}')" title="Click to view bandwidth chart">
                                 <td><code>{{ ip_address }}</code></td>
                                 <td>
-                                    {% if stats.tx_mb > 0 %}
-                                        <span class="badge bg-warning">{{ "%.2f"|format(stats.tx_mb) }} MB</span>
+                                    {% set tx_mbps = stats.tx_mb * 8 %}
+                                    {% if tx_mbps > 0 %}
+                                        <span class="badge bg-warning">{{ "%.2f"|format(tx_mbps) }} Mbps</span>
                                     {% else %}
-                                        <span class="text-muted">0 MB</span>
+                                        <span class="text-muted">0 Mbps</span>
                                     {% endif %}
                                 </td>
                                 <td>
-                                    {% if stats.rx_mb > 0 %}
-                                        <span class="badge bg-info">{{ "%.2f"|format(stats.rx_mb) }} MB</span>
+                                    {% set rx_mbps = stats.rx_mb * 8 %}
+                                    {% if rx_mbps > 0 %}
+                                        <span class="badge bg-info">{{ "%.2f"|format(rx_mbps) }} Mbps</span>
                                     {% else %}
-                                        <span class="text-muted">0 MB</span>
+                                        <span class="text-muted">0 Mbps</span>
                                     {% endif %}
                                 </td>
                                 <td>
-                                    {% set total_mb = stats.rx_mb + stats.tx_mb %}
-                                    {% if total_mb > 0 %}
-                                        <strong>{{ "%.2f"|format(total_mb) }} MB</strong>
+                                    {% set total_mbps = (stats.rx_mb + stats.tx_mb) * 8 %}
+                                    {% if total_mbps > 0 %}
+                                        <strong>{{ "%.2f"|format(total_mbps) }} Mbps</strong>
                                     {% else %}
-                                        <span class="text-muted">0 MB</span>
+                                        <span class="text-muted">0 Mbps</span>
                                     {% endif %}
                                 </td>
                             </tr>
@@ -625,7 +627,7 @@
             <div class="alert alert-info mt-3">
                 <small>
                     <strong>Note:</strong> Per-IP bandwidth data is collected automatically every minute for internal IPs only.
-                    Shows data volume in megabytes for internal IP addresses within your MikroTik network.
+                    Shows data volume in megabits per second for internal IP addresses within your MikroTik network.
                     Use the dropdown to change the time period view.
                 </small>
             </div>
@@ -1056,8 +1058,8 @@
                 return date.toLocaleTimeString();
             });
             
-            const downloadData = data.map(item => item.download_mb);
-            const uploadData = data.map(item => item.upload_mb);
+            const downloadData = data.map(item => item.download_mbps);
+            const uploadData = data.map(item => item.upload_mbps);
             
             // Create chart
             bandwidthChart = new Chart(ctx, {
@@ -1066,7 +1068,7 @@
                     labels: labels,
                     datasets: [
                         {
-                            label: 'Download (MB)',
+                            label: 'Download (Mbps)',
                             data: downloadData,
                             borderColor: 'rgb(54, 162, 235)',
                             backgroundColor: 'rgba(54, 162, 235, 0.1)',
@@ -1074,7 +1076,7 @@
                             fill: true
                         },
                         {
-                            label: 'Upload (MB)',
+                            label: 'Upload (Mbps)',
                             data: uploadData,
                             borderColor: 'rgb(255, 99, 132)',
                             backgroundColor: 'rgba(255, 99, 132, 0.1)',
@@ -1111,7 +1113,7 @@
                             display: true,
                             title: {
                                 display: true,
-                                text: 'Bandwidth (MB)'
+                                text: 'Bandwidth (Mbps)'
                             },
                             beginAtZero: true
                         }
@@ -1208,8 +1210,8 @@
                 return date.toLocaleTimeString();
             });
             
-            const downloadData = data.map(item => item.download_mb);
-            const uploadData = data.map(item => item.upload_mb);
+            const downloadData = data.map(item => item.download_mbps);
+            const uploadData = data.map(item => item.upload_mbps);
             
             // Create chart
             interfaceBandwidthChart = new Chart(ctx, {
@@ -1218,7 +1220,7 @@
                     labels: labels,
                     datasets: [
                         {
-                            label: 'Download (MB)',
+                            label: 'Download (Mbps)',
                             data: downloadData,
                             borderColor: 'rgb(54, 162, 235)',
                             backgroundColor: 'rgba(54, 162, 235, 0.1)',
@@ -1226,7 +1228,7 @@
                             fill: true
                         },
                         {
-                            label: 'Upload (MB)',
+                            label: 'Upload (Mbps)',
                             data: uploadData,
                             borderColor: 'rgb(255, 99, 132)',
                             backgroundColor: 'rgba(255, 99, 132, 0.1)',
@@ -1263,7 +1265,7 @@
                             display: true,
                             title: {
                                 display: true,
-                                text: 'Bandwidth (MB)'
+                                text: 'Bandwidth (Mbps)'
                             },
                             beginAtZero: true
                         }

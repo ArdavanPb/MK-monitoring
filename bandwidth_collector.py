@@ -202,11 +202,32 @@ def collect_interface_bandwidth_data(router_id, api):
             # Only save if we have valid data
             if iface_name and rx_bytes and tx_bytes:
                 try:
+                    # Get previous counter values for this interface
+                    c.execute('''
+                        SELECT rx_bytes, tx_bytes FROM interface_bandwidth_data 
+                        WHERE router_id = ? AND interface_name = ? 
+                        ORDER BY timestamp DESC LIMIT 1
+                    ''', (router_id, iface_name))
+                    
+                    prev_data = c.fetchone()
+                    
+                    if prev_data:
+                        prev_rx, prev_tx = prev_data
+                        # Calculate delta from previous measurement
+                        rx_delta = max(0, int(rx_bytes) - prev_rx)
+                        tx_delta = max(0, int(tx_bytes) - prev_tx)
+                    else:
+                        # First measurement for this interface
+                        rx_delta = 0
+                        tx_delta = 0
+                    
+                    # Save the delta values for rate calculation
                     c.execute('''
                         INSERT INTO interface_bandwidth_data (router_id, interface_name, rx_bytes, tx_bytes)
                         VALUES (?, ?, ?, ?)
-                    ''', (router_id, iface_name, int(rx_bytes), int(tx_bytes)))
+                    ''', (router_id, iface_name, rx_delta, tx_delta))
                     saved_count += 1
+                    
                 except Exception as e:
                     print(f"Error saving interface data for {iface_name}: {e}")
         

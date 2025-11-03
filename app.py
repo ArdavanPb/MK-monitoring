@@ -1237,13 +1237,33 @@ def get_ip_bandwidth_history(router_id, ip_address, time_period):
         rows = c.fetchall()
         print(f"Query returned {len(rows)} rows")
         
-        for row in rows:
+        # Calculate Mbps rates
+        for i, row in enumerate(rows):
             time_bucket, total_rx, total_tx = row
+            
+            # For the first data point, we can't calculate rate, so use 0
+            if i == 0:
+                download_mbps = 0
+                upload_mbps = 0
+            else:
+                # Calculate time difference in seconds
+                prev_time = datetime.datetime.strptime(rows[i-1][0], '%Y-%m-%d %H:%M:00')
+                curr_time = datetime.datetime.strptime(time_bucket, '%Y-%m-%d %H:%M:00')
+                time_diff_seconds = (curr_time - prev_time).total_seconds()
+                
+                if time_diff_seconds > 0:
+                    # Calculate Mbps: (bytes * 8 bits/byte) / time_in_seconds / 1,000,000 bits per megabit
+                    download_mbps = ((total_rx or 0) * 8) / time_diff_seconds / 1000000
+                    upload_mbps = ((total_tx or 0) * 8) / time_diff_seconds / 1000000
+                else:
+                    download_mbps = 0
+                    upload_mbps = 0
+            
             data_points.append({
                 'timestamp': time_bucket,
-                'download_mb': (total_rx or 0) / 1024 / 1024,
-                'upload_mb': (total_tx or 0) / 1024 / 1024,
-                'total_mb': ((total_rx or 0) + (total_tx or 0)) / 1024 / 1024
+                'download_mbps': download_mbps,
+                'upload_mbps': upload_mbps,
+                'total_mbps': download_mbps + upload_mbps
             })
         
         conn.close()
@@ -1320,18 +1340,45 @@ def get_interface_bandwidth_data(router_id, time_period):
         rows = c.fetchall()
         print(f"Interface query returned {len(rows)} rows")
         
+        # Group rows by interface
+        interface_rows = {}
         for row in rows:
             interface_name, time_bucket, total_rx, total_tx = row
+            if interface_name not in interface_rows:
+                interface_rows[interface_name] = []
+            interface_rows[interface_name].append((time_bucket, total_rx, total_tx))
+        
+        # Calculate Mbps rates for each interface
+        for interface_name, iface_rows in interface_rows.items():
+            interface_data[interface_name] = []
             
-            if interface_name not in interface_data:
-                interface_data[interface_name] = []
-            
-            interface_data[interface_name].append({
-                'timestamp': time_bucket,
-                'download_mb': (total_rx or 0) / 1024 / 1024,
-                'upload_mb': (total_tx or 0) / 1024 / 1024,
-                'total_mb': ((total_rx or 0) + (total_tx or 0)) / 1024 / 1024
-            })
+            for i, row in enumerate(iface_rows):
+                time_bucket, total_rx, total_tx = row
+                
+                # For the first data point, we can't calculate rate, so use 0
+                if i == 0:
+                    download_mbps = 0
+                    upload_mbps = 0
+                else:
+                    # Calculate time difference in seconds
+                    prev_time = datetime.datetime.strptime(iface_rows[i-1][0], '%Y-%m-%d %H:%M:00')
+                    curr_time = datetime.datetime.strptime(time_bucket, '%Y-%m-%d %H:%M:00')
+                    time_diff_seconds = (curr_time - prev_time).total_seconds()
+                    
+                    if time_diff_seconds > 0:
+                        # Calculate Mbps: (bytes * 8 bits/byte) / time_in_seconds / 1,000,000 bits per megabit
+                        download_mbps = ((total_rx or 0) * 8) / time_diff_seconds / 1000000
+                        upload_mbps = ((total_tx or 0) * 8) / time_diff_seconds / 1000000
+                    else:
+                        download_mbps = 0
+                        upload_mbps = 0
+                
+                interface_data[interface_name].append({
+                    'timestamp': time_bucket,
+                    'download_mbps': download_mbps,
+                    'upload_mbps': upload_mbps,
+                    'total_mbps': download_mbps + upload_mbps
+                })
         
         conn.close()
         return interface_data
