@@ -12,7 +12,9 @@ from datetime import datetime, timedelta
 import os
 
 # Use absolute path for Docker compatibility
-db_path = '/app/data/routers.db'
+# db_path = '/app/data/routers.db'
+# Use local path for non-Docker usage
+db_path = os.path.join('data', 'routers.db')
 
 # Dictionary to store previous interface statistics for each router
 router_interface_stats = {}
@@ -22,7 +24,8 @@ def init_db():
     global db_path
     
     # Use persistent data directory
-    data_dir = '/app/data'
+    # data_dir = '/app/data'
+    data_dir = 'data'
     os.makedirs(data_dir, exist_ok=True)
     
     try:
@@ -202,30 +205,11 @@ def collect_interface_bandwidth_data(router_id, api):
             # Only save if we have valid data
             if iface_name and rx_bytes and tx_bytes:
                 try:
-                    # Get previous counter values for this interface
-                    c.execute('''
-                        SELECT rx_bytes, tx_bytes FROM interface_bandwidth_data 
-                        WHERE router_id = ? AND interface_name = ? 
-                        ORDER BY timestamp DESC LIMIT 1
-                    ''', (router_id, iface_name))
-                    
-                    prev_data = c.fetchone()
-                    
-                    if prev_data:
-                        prev_rx, prev_tx = prev_data
-                        # Calculate delta from previous measurement
-                        rx_delta = max(0, int(rx_bytes) - prev_rx)
-                        tx_delta = max(0, int(tx_bytes) - prev_tx)
-                    else:
-                        # First measurement for this interface
-                        rx_delta = 0
-                        tx_delta = 0
-                    
-                    # Save the delta values for rate calculation
+                    # Store the cumulative counter values directly
                     c.execute('''
                         INSERT INTO interface_bandwidth_data (router_id, interface_name, rx_bytes, tx_bytes)
                         VALUES (?, ?, ?, ?)
-                    ''', (router_id, iface_name, rx_delta, tx_delta))
+                    ''', (router_id, iface_name, int(rx_bytes), int(tx_bytes)))
                     saved_count += 1
                     
                 except Exception as e:
