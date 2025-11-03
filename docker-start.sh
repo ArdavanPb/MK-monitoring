@@ -4,6 +4,7 @@
 set -e  # Exit on any error
 
 echo "Starting MK-Monitoring in Docker..."
+echo "Platform: $(uname -s)"
 
 # Create data directory if it doesn't exist
 mkdir -p /app/data
