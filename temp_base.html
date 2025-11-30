@@ -66,6 +66,25 @@
             width: 100%;
             table-layout: fixed;
         }
+        
+        /* Connections styling */
+        .connection-item {
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6 !important;
+        }
+        
+        .connection-item:hover {
+            background-color: #e9ecef;
+        }
+        
+        .connections-loading {
+            color: #6c757d;
+        }
+        
+        .view-connections-btn {
+            font-size: 0.8rem;
+            padding: 0.25rem 0.5rem;
+        }
     </style>
 </head>
 <body>
@@ -149,49 +168,133 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     
     <script>
-        // Update connection counts on dashboard
+    
+    <script>
+        // Live Connections functionality for dashboard
         document.addEventListener('DOMContentLoaded', function() {
-            // Load connection counts for all routers on dashboard
-            document.querySelectorAll('[id^="connection-count-"]').forEach(element => {
-                const routerId = element.id.replace('connection-count-', '');
-                updateConnectionCount(routerId);
+            // Load live connections for all routers on dashboard
+            document.querySelectorAll('.live-connections-loading').forEach(loadingElement => {
+                const routerId = loadingElement.id.replace('live-connections-loading-', '');
+                loadLiveConnections(routerId);
             });
             
-            // Auto-refresh counts every 30 seconds
+            // Auto-refresh every 15 seconds
             setInterval(() => {
-                document.querySelectorAll('[id^="connection-count-"]').forEach(element => {
-                    const routerId = element.id.replace('connection-count-', '');
-                    updateConnectionCount(routerId);
+                document.querySelectorAll('.live-connections-content').forEach(contentElement => {
+                    const routerId = contentElement.id.replace('live-connections-content-', '');
+                    if (contentElement.innerHTML) {
+                        loadLiveConnections(routerId);
+                    }
                 });
-            }, 30000);
+            }, 15000);
         });
         
-        function updateConnectionCount(routerId) {
-            const countElement = document.getElementById(`connection-count-${routerId}`);
-            if (!countElement) return;
+        function loadLiveConnections(routerId) {
+            const loadingElement = document.getElementById(`live-connections-loading-${routerId}`);
+            const contentElement = document.getElementById(`live-connections-content-${routerId}`);
+            const countElement = document.getElementById(`live-connections-count-${routerId}`);
             
-            axios.get(`/api/connection-count/${routerId}`)
+            if (!loadingElement || !contentElement) return;
+            
+            loadingElement.style.display = 'block';
+            contentElement.style.display = 'none';
+            
+            axios.get(`/api/live-connections/${routerId}`)
                 .then(response => {
                     if (response.data.success) {
-                        countElement.textContent = response.data.count;
-                    
-                        // Update button color based on activity
-                        const button = document.getElementById(`live-connections-btn-${routerId}`);
-                        if (button) {
-                            if (response.data.count > 0) {
-                                button.classList.remove('btn-info');
-                                button.classList.add('btn-warning');
-                            } else {
-                                button.classList.remove('btn-warning');
-                                button.classList.add('btn-info');
-                            }
-                        }
+                        displayLiveConnectionsData(response.data.data, contentElement, countElement);
+                    } else {
+                        displayLiveConnectionsError(response.data.error, contentElement, countElement);
                     }
                 })
                 .catch(error => {
-                    console.error('Error updating connection count:', error);
-                    countElement.textContent = '0';
+                    console.error('Error loading live connections:', error);
+                    displayLiveConnectionsError('Failed to load connection data', contentElement, countElement);
+                })
+                .finally(() => {
+                    loadingElement.style.display = 'none';
+                    contentElement.style.display = 'block';
                 });
+        }
+        
+        function displayLiveConnectionsData(connectionsData, contentElement, countElement) {
+            if (!connectionsData || !connectionsData.connections || connectionsData.connections.length === 0) {
+                contentElement.innerHTML = `
+                    <div class="alert alert-info">
+                        <i class="bi bi-info-circle"></i> No active internet connections found.
+                    </div>
+                `;
+                if (countElement) {
+                    countElement.textContent = '0 active';
+                }
+                return;
+            }
+            
+            // Update count
+            if (countElement) {
+                countElement.textContent = `${connectionsData.total_count} active`;
+            }
+            
+            let html = `
+                <div class="table-responsive">
+                    <table class="table table-striped table-hover table-sm">
+                        <thead class="table-dark">
+                            <tr>
+                                <th>Source IP</th>
+                                <th>Destination</th>
+                                <th>Service</th>
+                                <th>Upload</th>
+                                <th>Download</th>
+                                <th>Duration</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+            `;
+            
+            connectionsData.connections.forEach(conn => {
+                const destination = conn.hostname ? `${conn.dst_ip}<br><small class="text-muted">${conn.hostname}</small>` : conn.dst_ip;
+                
+                html += `
+                    <tr>
+                        <td><code>${conn.src_ip}</code></td>
+                        <td><code>${destination}</code></td>
+                        <td>${conn.service}</td>
+                        <td><span class="text-primary fw-bold">${conn.upload_human}</span></td>
+                        <td><span class="text-success fw-bold">${conn.download_human}</span></td>
+                        <td><small class="text-muted">${conn.duration}</small></td>
+                    </tr>
+                `;
+            });
+            
+            html += `
+                        </tbody>
+                    </table>
+                </div>
+                <div class="mt-2 text-muted small">
+                    <div class="d-flex justify-content-between">
+                        <span>Total: ↑ ${connectionsData.total_upload_human} / ↓ ${connectionsData.total_download_human}</span>
+                        <span>Auto-refreshing every 15 seconds</span>
+                    </div>
+                </div>
+            `;
+            
+            contentElement.innerHTML = html;
+        }
+        
+        function displayLiveConnectionsError(error, contentElement, countElement) {
+            contentElement.innerHTML = `
+                <div class="alert alert-warning">
+                    <i class="bi bi-exclamation-triangle"></i> 
+                    <strong>Connection data unavailable:</strong> ${error}
+                </div>
+            `;
+            if (countElement) {
+                countElement.textContent = '0 active';
+            }
+        }
+        
+        function refreshLiveConnections(routerId) {
+            loadLiveConnections(routerId);
         }
     </script>
 </body>

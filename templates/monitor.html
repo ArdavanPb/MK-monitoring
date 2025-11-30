@@ -483,6 +483,34 @@
     </div>
 </div>
 
+<!-- Live Firewall Connections -->
+<div class="row">
+    <div class="col-md-12">
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="card-title mb-0">Live Connections (Firewall)</h5>
+                <div class="d-flex gap-2">
+                    <button class="btn btn-sm btn-outline-info" id="refreshFirewallConnections">
+                        Refresh
+                    </button>
+                    <span class="badge bg-primary" id="liveConnectionsCount">0</span>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="firewall-connections-loading text-center py-3" id="firewallConnectionsLoading">
+                    <div class="spinner-border spinner-border-sm" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <span class="ms-2">Loading live connections...</span>
+                </div>
+                <div class="firewall-connections-content" id="firewallConnectionsContent" style="display: none;">
+                    <!-- Content will be populated by JavaScript -->
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- Bandwidth Chart -->
 <div class="card mb-4" id="bandwidthChartSection" style="display: none;">
     <div class="card-header d-flex justify-content-between align-items-center">

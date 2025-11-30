@@ -8,9 +8,11 @@ A Flask web application that connects to MikroTik routers via API to monitor and
 - **Multiple Router Support**: Monitor multiple MikroTik routers from a single dashboard
 - **Real-time Monitoring**: View router name, uptime, memory usage, CPU load, and firmware version
 - **Detailed Monitoring**: Comprehensive system information including IP addresses, system identity, clock, and health data
+- **Live Firewall Connections**: Sophos/FortiGate-style real-time connection monitoring with traffic analysis
 - **Connection Testing**: Test router connections before adding them to the system
 - **Custom API Port**: Support for custom MikroTik API ports (default: 8728)
 - **Router Management**: Add, refresh, and delete routers from the dashboard
+- **Real-time Connections**: View active network connections, connected clients, and upstream routes
 - **Responsive Design**: Bootstrap-based responsive interface
 
 ## Quick Start

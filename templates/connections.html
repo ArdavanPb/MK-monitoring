@@ -1,0 +1,310 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h1>Live Connections: {{ router.name }}</h1>
+        <small class="text-muted">{{ router.host }}:{{ router.port }}</small>
+    </div>
+    <div>
+        <a href="{{ url_for('index') }}" class="btn btn-secondary">Back to Dashboard</a>
+    </div>
+</div>
+
+<!-- Connection Stats Card -->
+<div class="card mb-4">
+    <div class="card-body">
+        <div class="row align-items-center">
+            <div class="col-md-6">
+                <h3 class="mb-1" id="connections-count">
+                    {% if 'error' in connections_data %}
+                        Connection Data Unavailable
+                    {% else %}
+                        Active Internet Connections: {{ connections_data.total_count }}
+                    {% endif %}
+                </h3>
+                {% if 'error' not in connections_data %}
+                <p class="text-muted mb-0">
+                    ↑ {{ connections_data.total_upload|format_bytes }} | ↓ {{ connections_data.total_download|format_bytes }}
+                </p>
+                {% endif %}
+            </div>
+            <div class="col-md-6 text-end">
+                <div class="d-flex justify-content-end align-items-center gap-2">
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" id="autoRefreshToggle" checked>
+                        <label class="form-check-label" for="autoRefreshToggle">Auto-refresh (15s)</label>
+                    </div>
+                    <button class="btn btn-outline-primary" id="refreshBtn">
+                        <span class="spinner-border spinner-border-sm d-none" id="refreshSpinner" role="status"></span>
+                        Refresh Now
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Connections Table -->
+<div class="card">
+    <div class="card-header">
+        <h5 class="card-title mb-0">Current Activities</h5>
+    </div>
+    <div class="card-body p-0">
+        {% if 'error' in connections_data %}
+        <div class="alert alert-warning m-3">
+            <i class="bi bi-exclamation-triangle"></i>
+            <strong>Connection data unavailable:</strong> {{ connections_data.error }}
+        </div>
+        {% elif not connections_data.connections %}
+        <div class="alert alert-info m-3">
+            <i class="bi bi-info-circle"></i>
+            No active internet connections found.
+        </div>
+        {% else %}
+        <div class="table-responsive">
+            <table class="table table-striped table-hover mb-0" id="connectionsTable">
+                <thead class="table-dark">
+                    <tr>
+                        <th>Source IP</th>
+                        <th>Hostname</th>
+                        <th>Destination</th>
+                        <th>Service</th>
+                        <th>Upload</th>
+                        <th>Download</th>
+                        <th>Duration</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody id="connectionsTableBody">
+                    {% for conn in connections_data.connections %}
+                    <tr>
+                        <td><code>{{ conn.src_ip }}</code></td>
+                        <td>
+                            {% if conn.src_hostname %}
+                            <span class="badge bg-light text-dark">{{ conn.src_hostname }}</span>
+                            {% else %}
+                            <span class="text-muted">-</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <code>{{ conn.dst_ip }}</code>
+                            {% if conn.dst_hostname %}
+                            <br><small class="text-muted">{{ conn.dst_hostname }}</small>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <span class="badge bg-primary">{{ conn.service }}</span>
+                        </td>
+                        <td><span class="text-primary fw-bold">{{ conn.upload_human }}</span></td>
+                        <td><span class="text-success fw-bold">{{ conn.download_human }}</span></td>
+                        <td><small class="text-muted">{{ conn.duration }}</small></td>
+                        <td>
+                            <div class="btn-group btn-group-sm">
+                                <button class="btn btn-outline-danger" onclick="blockIP('{{ conn.src_ip }}')" title="Block this IP">
+                                    Block
+                                </button>
+                                <button class="btn btn-outline-warning" onclick="markIP('{{ conn.src_ip }}')" title="Mark for monitoring">
+                                    Mark
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Grouped View (Collapsible) -->
+{% if connections_data.connections and 'error' not in connections_data %}
+<div class="card mt-4">
+    <div class="card-header">
+        <h5 class="card-title mb-0">Grouped by Source IP</h5>
+    </div>
+    <div class="card-body p-0">
+        <div class="accordion" id="connectionsAccordion">
+            {% set grouped_connections = {} %}
+            {% for conn in connections_data.connections %}
+                {% set _ = grouped_connections.setdefault(conn.src_ip, []).append(conn) %}
+            {% endfor %}
+            
+            {% for src_ip, connections in grouped_connections.items() %}
+            {% set total_upload = connections|sum(attribute='upload_bytes') %}
+            {% set total_download = connections|sum(attribute='download_bytes') %}
+            <div class="accordion-item">
+                <h2 class="accordion-header" id="heading{{ loop.index }}">
+                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" 
+                            data-bs-target="#collapse{{ loop.index }}" aria-expanded="false" 
+                            aria-controls="collapse{{ loop.index }}">
+                        <div class="d-flex justify-content-between align-items-center w-100">
+                            <div>
+                                <strong>{{ src_ip }}</strong>
+                                {% if connections[0].src_hostname %}
+                                <span class="badge bg-light text-dark ms-2">{{ connections[0].src_hostname }}</span>
+                                {% endif %}
+                                <span class="badge bg-primary ms-2">{{ connections|length }} connections</span>
+                            </div>
+                            <div>
+                                <span class="text-primary me-3">↑ {{ total_upload|format_bytes }}</span>
+                                <span class="text-success">↓ {{ total_download|format_bytes }}</span>
+                            </div>
+                        </div>
+                    </button>
+                </h2>
+                <div id="collapse{{ loop.index }}" class="accordion-collapse collapse" 
+                     aria-labelledby="heading{{ loop.index }}" data-bs-parent="#connectionsAccordion">
+                    <div class="accordion-body p-0">
+                        <table class="table table-sm table-striped mb-0">
+                            <thead>
+                                <tr>
+                                    <th>Destination</th>
+                                    <th>Service</th>
+                                    <th>Upload</th>
+                                    <th>Download</th>
+                                    <th>Duration</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for conn in connections %}
+                                <tr>
+                                    <td>
+                                        <code>{{ conn.dst_ip }}</code>
+                                        {% if conn.dst_hostname %}
+                                        <br><small class="text-muted">{{ conn.dst_hostname }}</small>
+                                        {% endif %}
+                                    </td>
+                                    <td><span class="badge bg-primary">{{ conn.service }}</span></td>
+                                    <td><span class="text-primary">{{ conn.upload_human }}</span></td>
+                                    <td><span class="text-success">{{ conn.download_human }}</span></td>
+                                    <td><small class="text-muted">{{ conn.duration }}</small></td>
+                                    <td>
+                                        <div class="btn-group btn-group-sm">
+                                            <button class="btn btn-outline-danger" onclick="blockIP('{{ conn.src_ip }}')">
+                                                Block
+                                            </button>
+                                            <button class="btn btn-outline-warning" onclick="markIP('{{ conn.src_ip }}')">
+                                                Mark
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<script>
+let autoRefreshInterval;
+
+// Initialize auto-refresh
+document.addEventListener('DOMContentLoaded', function() {
+    startAutoRefresh();
+    
+    // Set up refresh button
+    document.getElementById('refreshBtn').addEventListener('click', function() {
+        refreshConnections();
+    });
+    
+    // Set up auto-refresh toggle
+    document.getElementById('autoRefreshToggle').addEventListener('change', function() {
+        if (this.checked) {
+            startAutoRefresh();
+        } else {
+            stopAutoRefresh();
+        }
+    });
+});
+
+function startAutoRefresh() {
+    stopAutoRefresh(); // Clear any existing interval
+    autoRefreshInterval = setInterval(refreshConnections, 15000);
+}
+
+function stopAutoRefresh() {
+    if (autoRefreshInterval) {
+        clearInterval(autoRefreshInterval);
+    }
+}
+
+function refreshConnections() {
+    const refreshBtn = document.getElementById('refreshBtn');
+    const refreshSpinner = document.getElementById('refreshSpinner');
+    
+    refreshBtn.disabled = true;
+    refreshSpinner.classList.remove('d-none');
+    
+    axios.get(`/api/connections/{{ router.id }}`)
+        .then(response => {
+            if (response.data.success) {
+                updateConnectionsTable(response.data.data);
+            } else {
+                showError(response.data.error);
+            }
+        })
+        .catch(error => {
+            console.error('Error refreshing connections:', error);
+            showError('Failed to refresh connection data');
+        })
+        .finally(() => {
+            refreshBtn.disabled = false;
+            refreshSpinner.classList.add('d-none');
+        });
+}
+
+function updateConnectionsTable(data) {
+    // Update connection count
+    document.getElementById('connections-count').textContent = `Active Internet Connections: ${data.total_count}`;
+    
+    // Update traffic totals
+    const trafficElement = document.querySelector('.text-muted.mb-0');
+    if (trafficElement) {
+        trafficElement.textContent = `↑ ${formatBytes(data.total_upload)} | ↓ ${formatBytes(data.total_download)}`;
+    }
+    
+    // Update table (simplified - in production you'd want a more sophisticated update)
+    if (data.connections && data.connections.length > 0) {
+        // For a complete implementation, you'd rebuild the entire table
+        // For now, we'll just reload the page for simplicity
+        location.reload();
+    }
+}
+
+function showError(message) {
+    // Simple error display - in production you'd want a better notification system
+    alert('Error: ' + message);
+}
+
+function blockIP(ip) {
+    if (confirm(`Are you sure you want to block IP ${ip}?`)) {
+        // In production, this would call an API to block the IP
+        alert(`IP ${ip} would be blocked (implementation needed)`);
+    }
+}
+
+function markIP(ip) {
+    if (confirm(`Mark IP ${ip} for monitoring?`)) {
+        // In production, this would call an API to mark the IP
+        alert(`IP ${ip} would be marked (implementation needed)`);
+    }
+}
+
+// Format bytes helper (for client-side if needed)
+function formatBytes(bytes) {
+    if (bytes === 0) return '0 B';
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(1024));
+    return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
+}
+</script>
+{% endblock %}

@@ -5,9 +5,41 @@ import routeros_api
 import json
 import os
 import hashlib
+import time
+import threading
 
 app = Flask(__name__)
 app.secret_key = 'your-secret-key-here'
+
+import math
+from datetime import timedelta
+
+def format_bytes(size):
+    if not size or size == 0:
+        return "0 B"
+    power = math.floor(math.log(size, 1024))
+    units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+    if power >= len(units):
+        power = len(units) - 1
+    value = size / (1024 ** power)
+    return f"{value:.1f} {units[power]}"
+
+def format_duration(seconds_str):
+    if not seconds_str:
+        return "N/A"
+    try:
+        seconds = int(''.join(filter(str.isdigit, seconds_str)))
+        if seconds < 60:
+            return f"{seconds}s"
+        elif seconds < 3600:
+            return f"{seconds // 60}m {seconds % 60}s"
+        else:
+            return f"{seconds // 3600}h {(seconds % 3600) // 60}m"
+    except:
+        return seconds_str
+
+app.jinja_env.filters['format_bytes'] = format_bytes
+app.jinja_env.filters['format_duration'] = format_duration
 
 # Default admin credentials (username: admin, password: admin)
 DEFAULT_USERNAME = 'admin'
@@ -16,6 +48,10 @@ DEFAULT_PASSWORD = 'admin'
 # Global database path - Docker compatible
 import os
 db_path = os.environ.get('DB_PATH', '/app/data/routers.db')
+
+# Global cache for firewall connections (10-second TTL)
+firewall_connections_cache = {}
+firewall_cache_lock = threading.Lock()
 
 # For development outside Docker, use local data directory
 if not os.path.exists('/app/data'):
@@ -1276,6 +1312,141 @@ def get_ip_bandwidth_history(router_id, ip_address, time_period):
         conn.close()
         raise
 
+def get_router_connections(router_id):
+    """Get real-time connection data for a router including internal IPs, clients, and upstream connections"""
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    c.execute('SELECT * FROM routers WHERE id = ?', (router_id,))
+    router = c.fetchone()
+    conn.close()
+    
+    if not router:
+        return {'error': 'Router not found'}
+    
+    router_id, name, host, port, username, password, created_at = router
+    api, connection, error = connect_to_router(host, port, username, password)
+    
+    if not api:
+        return {'error': error or 'Failed to connect to router'}
+    
+    try:
+        connections_data = []
+        
+        # Get IP addresses to identify internal interfaces
+        ip_addresses = api.get_resource('/ip/address')
+        ip_data = ip_addresses.get() if ip_addresses.get() else []
+        
+        # Get DHCP leases for connected clients
+        dhcp_leases = api.get_resource('/ip/dhcp-server/lease')
+        leases_data = dhcp_leases.get() if dhcp_leases.get() else []
+        
+        # Get ARP table for MAC addresses and connection status
+        arp_table = api.get_resource('/ip/arp')
+        arp_data = arp_table.get() if arp_table.get() else []
+        
+        # Get routes to identify upstream connections
+        routes = api.get_resource('/ip/route')
+        routes_data = routes.get() if routes.get() else []
+        
+        # Get interfaces for additional info
+        interfaces = api.get_resource('/interface')
+        interfaces_data = interfaces.get() if interfaces.get() else []
+        
+        # Process each internal IP address
+        for ip_addr in ip_data:
+            address = ip_addr.get('address', '')
+            interface = ip_addr.get('interface', '')
+            
+            # Skip WAN interfaces and focus on internal networks
+            if not address or not interface:
+                continue
+                
+            # Extract IP from CIDR notation
+            ip = address.split('/')[0]
+            
+            # Skip loopback and special addresses
+            if ip.startswith('127.') or ip.startswith('169.254.'):
+                continue
+            
+            # Find clients connected to this interface
+            clients = []
+            for lease in leases_data:
+                if lease.get('address') and lease.get('server') == ip:
+                    client_ip = lease.get('address')
+                    mac_address = lease.get('mac-address', '')
+                    hostname = lease.get('host-name', '')
+                    status = lease.get('status', 'unknown')
+                    
+                    # Find ARP entry for this client
+                    arp_info = None
+                    for arp_entry in arp_data:
+                        if arp_entry.get('address') == client_ip:
+                            arp_info = arp_entry
+                            break
+                    
+                    clients.append({
+                        'ip': client_ip,
+                        'mac': mac_address,
+                        'hostname': hostname,
+                        'status': status,
+                        'interface': arp_info.get('interface', '') if arp_info else '',
+                        'dynamic': arp_info.get('dynamic', False) if arp_info else False
+                    })
+            
+            # Find upstream connection
+            upstream = None
+            for route in routes_data:
+                if route.get('dst-address') == '0.0.0.0/0':  # Default route
+                    gateway = route.get('gateway', '')
+                    route_interface = route.get('interface', '')
+                    
+                    # Check if this route applies to our interface
+                    if route_interface == interface:
+                        upstream = {
+                            'gateway': gateway,
+                            'interface': route_interface,
+                            'type': 'default_route'
+                        }
+                        break
+            
+            # If no specific upstream found, check for bridge or parent interface
+            if not upstream:
+                for iface in interfaces_data:
+                    if iface.get('name') == interface:
+                        master_port = iface.get('master-port')
+                        if master_port:
+                            upstream = {
+                                'gateway': 'N/A',
+                                'interface': master_port,
+                                'type': 'bridge_parent'
+                            }
+                        break
+            
+            # If still no upstream, mark as direct
+            if not upstream:
+                upstream = {
+                    'gateway': 'Direct to WAN',
+                    'interface': interface,
+                    'type': 'direct'
+                }
+            
+            connections_data.append({
+                'ip': ip,
+                'interface': interface,
+                'network': address,
+                'clients': clients,
+                'client_count': len(clients),
+                'upstream': upstream
+            })
+        
+        connection.disconnect()
+        return connections_data
+        
+    except Exception as e:
+        if connection:
+            connection.disconnect()
+        return {'error': str(e)}
+
 def get_interface_bandwidth_data(router_id, time_period):
     """Get interface bandwidth statistics for charting"""
     import datetime
@@ -1554,6 +1725,139 @@ def api_chart_interface_bandwidth(router_id):
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
 
+@app.route('/api/network-connections/<int:router_id>')
+@login_required
+def api_router_network_connections(router_id):
+    """API endpoint for real-time router network connections data"""
+    try:
+        connections_data = get_router_connections(router_id)
+        
+        if 'error' in connections_data:
+            return jsonify({
+                'success': False,
+                'error': connections_data['error']
+            }), 500
+        
+        return jsonify({
+            'success': True,
+            'data': connections_data,
+            'timestamp': datetime.now().isoformat()
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/connections/<int:router_id>')
+@login_required
+def connections_page(router_id):
+    """Dedicated Live Connections page (Sophos XG style)"""
+    # Get query parameters
+    page = request.args.get('page', 1, type=int)
+    sort_by = request.args.get('sort', 'download_desc')
+    
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    c.execute('SELECT * FROM routers WHERE id = ?', (router_id,))
+    router = c.fetchone()
+    conn.close()
+    
+    if not router:
+        flash('Router not found', 'error')
+        return redirect(url_for('index'))
+    
+    router_id, name, host, port, username, password, created_at = router
+    
+    # Get connection data
+    connections_data = get_live_firewall_connections(router_id)
+    
+    if 'error' not in connections_data:
+        # Apply sorting
+        connections = connections_data['connections']
+        if sort_by == 'download_desc':
+            connections.sort(key=lambda x: x['download_bytes'], reverse=True)
+        elif sort_by == 'upload_desc':
+            connections.sort(key=lambda x: x['upload_bytes'], reverse=True)
+        elif sort_by == 'duration_desc':
+            connections.sort(key=lambda x: x.get('duration', ''), reverse=True)
+        elif sort_by == 'src_ip_asc':
+            connections.sort(key=lambda x: x['src_ip'])
+        
+        # Apply pagination
+        per_page = 20
+        total_connections = len(connections)
+        total_pages = (total_connections + per_page - 1) // per_page
+        
+        # Ensure page is within bounds
+        page = max(1, min(page, total_pages))
+        
+        start_idx = (page - 1) * per_page
+        end_idx = start_idx + per_page
+        paginated_connections = connections[start_idx:end_idx]
+        
+        connections_data['connections'] = paginated_connections
+        connections_data['pagination'] = {
+            'page': page,
+            'per_page': per_page,
+            'total_connections': total_connections,
+            'total_pages': total_pages,
+            'has_prev': page > 1,
+            'has_next': page < total_pages,
+            'sort_by': sort_by
+        }
+    
+    return render_template('connections.html', 
+                         router={'id': router_id, 'name': name, 'host': host, 'port': port},
+                         connections_data=connections_data)
+
+@app.route('/api/connections/<int:router_id>')
+@login_required
+def api_connections(router_id):
+    """API endpoint for connections page data"""
+    try:
+        connections_data = get_live_firewall_connections(router_id)
+        
+        if 'error' in connections_data:
+            return jsonify({
+                'success': False,
+                'error': connections_data['error']
+            }), 500
+        
+        return jsonify({
+            'success': True,
+            'data': connections_data,
+            'timestamp': datetime.now().isoformat()
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/connection-count/<int:router_id>')
+@login_required
+def api_connection_count(router_id):
+    """API endpoint for connection count only (for dashboard button)"""
+    try:
+        connections_data = get_live_firewall_connections(router_id)
+        
+        if 'error' in connections_data:
+            return jsonify({
+                'success': False,
+                'error': connections_data['error']
+            }), 500
+        
+        return jsonify({
+            'success': True,
+            'count': connections_data.get('total_count', 0)
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
 @app.route('/router_logs/<int:router_id>')
 @login_required
 def router_logs(router_id):
@@ -1638,6 +1942,246 @@ def router_logs(router_id):
                          retention_days=retention_days,
                          current_severity=severity_filter,
                          current_search=search_term)
+
+def get_live_firewall_connections(router_id):
+    """Get real-time firewall connections with hostname resolution and caching (10-second TTL)"""
+    current_time = time.time()
+    
+    with firewall_cache_lock:
+        # Check cache first
+        if router_id in firewall_connections_cache:
+            cached_data, timestamp = firewall_connections_cache[router_id]
+            if current_time - timestamp < 10:  # 10-second cache
+                return cached_data
+    
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    c.execute('SELECT * FROM routers WHERE id = ?', (router_id,))
+    router = c.fetchone()
+    conn.close()
+    
+    if not router:
+        return {'error': 'Router not found'}
+    
+    router_id, name, host, port, username, password, created_at = router
+    api, connection, error = connect_to_router(host, port, username, password)
+    
+    if not api:
+        return {'error': error or 'Failed to connect to router'}
+    
+    try:
+        # Get firewall connections
+        firewall_connections = api.get_resource('/ip/firewall/connection')
+        connections_data = firewall_connections.get() if firewall_connections.get() else []
+        
+        # Get DHCP leases for hostname resolution
+        hostname_map = {}
+        try:
+            dhcp_leases = api.get_resource('/ip/dhcp-server/lease')
+            leases = dhcp_leases.get() if dhcp_leases.get() else []
+            for lease in leases:
+                if lease.get('address') and lease.get('host-name'):
+                    hostname_map[lease['address']] = lease['host-name']
+        except Exception as e:
+            print(f"Could not get DHCP leases: {e}")
+        
+        # Get ARP table as fallback for hostname resolution
+        try:
+            arp_table = api.get_resource('/ip/arp')
+            arp_data = arp_table.get() if arp_table.get() else []
+            for arp_entry in arp_data:
+                if arp_entry.get('address') and arp_entry.get('host-name') and arp_entry['address'] not in hostname_map:
+                    hostname_map[arp_entry['address']] = arp_entry['host-name']
+        except Exception as e:
+            print(f"Could not get ARP table: {e}")
+        
+        # Process connections
+        processed_connections = []
+        total_connections = 0
+        total_upload = 0
+        total_download = 0
+        
+        for conn in connections_data:
+            src_ip = conn.get('src-address', '').split(':')[0]  # Remove port if present
+            dst_ip = conn.get('dst-address', '').split(':')[0]
+            protocol = conn.get('protocol', '')
+            
+            # Filter: only show outbound internet traffic
+            if not src_ip or not dst_ip:
+                continue
+                
+            # Check if source IP is internal and destination is external
+            is_internal_src = any(src_ip.startswith(net) for net in [
+                '192.168.', '10.', '172.16.', '172.17.', '172.18.', '172.19.', 
+                '172.20.', '172.21.', '172.22.', '172.23.', '172.24.', '172.25.', 
+                '172.26.', '172.27.', '172.28.', '172.29.', '172.30.', '172.31.'
+            ])
+            
+            is_external_dst = not dst_ip.startswith(('192.168.', '10.', '172.'))
+            
+            if is_internal_src and is_external_dst:
+                total_connections += 1
+                
+                # Get bytes (format: "sent/received" from router perspective)
+                bytes_field = conn.get('bytes', '0/0')
+                if '/' in bytes_field:
+                    sent_bytes, received_bytes = map(int, bytes_field.split('/'))
+                else:
+                    sent_bytes, received_bytes = 0, 0
+                
+                # From router view: sent = client upload, received = client download
+                upload_bytes = sent_bytes      # Client upload to internet
+                download_bytes = received_bytes  # Client download from internet
+                
+                total_upload += upload_bytes
+                total_download += download_bytes
+                
+                # Get ports
+                dst_port = conn.get('dst-port', '0')
+                
+                # Calculate duration
+                uptime = conn.get('orig-time', '0s')
+                duration = parse_routeros_duration(uptime)
+                
+                # Determine service/app
+                service_name = get_service_name_simple(dst_port, protocol)
+                
+                # Try to get SNI/hostname if available (RouterOS v7+)
+                sni = conn.get('sni', '')
+                dst_hostname = ''
+                if sni:
+                    dst_hostname = sni
+                
+                # Get source hostname from DHCP/ARP
+                src_hostname = hostname_map.get(src_ip, '')
+                
+                processed_connections.append({
+                    'src_ip': src_ip,
+                    'src_hostname': src_hostname or '-',
+                    'dst_ip': dst_ip,
+                    'dst_hostname': dst_hostname or dst_ip,
+                    'service': service_name,
+                    'upload_bytes': upload_bytes,
+                    'download_bytes': download_bytes,
+                    'upload_human': format_bytes(upload_bytes),
+                    'download_human': format_bytes(download_bytes),
+                    'duration': duration,
+                    'protocol': protocol,
+                    'total_bytes': upload_bytes + download_bytes
+                })
+        
+        # Sort by total traffic (most bandwidth first)
+        processed_connections.sort(key=lambda x: x['total_bytes'], reverse=True)
+        
+        connection.disconnect()
+        
+        result = {
+            'connections': processed_connections,
+            'total_count': total_connections,
+            'total_upload': total_upload,
+            'total_download': total_download,
+            'total_upload_human': format_bytes(total_upload),
+            'total_download_human': format_bytes(total_download),
+            'timestamp': current_time
+        }
+        
+        # Update cache
+        with firewall_cache_lock:
+            firewall_connections_cache[router_id] = (result, current_time)
+        
+        return result
+        
+    except Exception as e:
+        if connection:
+            connection.disconnect()
+        return {'error': str(e)}
+
+def parse_routeros_duration(duration_str):
+    """Parse RouterOS duration format (e.g., '2h15m30s') into human readable format"""
+    if not duration_str or duration_str == '0s':
+        return '0s'
+    
+    # RouterOS format: 2h15m30s
+    import re
+    hours = minutes = seconds = 0
+    
+    hour_match = re.search(r'(\d+)h', duration_str)
+    if hour_match:
+        hours = int(hour_match.group(1))
+    
+    minute_match = re.search(r'(\d+)m', duration_str)
+    if minute_match:
+        minutes = int(minute_match.group(1))
+    
+    second_match = re.search(r'(\d+)s', duration_str)
+    if second_match:
+        seconds = int(second_match.group(1))
+    
+    if hours > 0:
+        return f"{hours}h {minutes}m {seconds}s"
+    elif minutes > 0:
+        return f"{minutes}m {seconds}s"
+    else:
+        return f"{seconds}s"
+
+def format_bytes(bytes_count):
+    """Convert bytes to human readable format"""
+    if bytes_count == 0:
+        return "0 B"
+    
+    sizes = ['B', 'KB', 'MB', 'GB', 'TB']
+    i = 0
+    while bytes_count >= 1024 and i < len(sizes) - 1:
+        bytes_count /= 1024.0
+        i += 1
+    
+    return f"{bytes_count:.1f} {sizes[i]}"
+
+def get_service_name_simple(dst_port, protocol):
+    """Determine service name based on port and protocol - simplified version"""
+    common_ports = {
+        '80': 'HTTP',
+        '443': 'HTTPS',
+        '53': 'DNS',
+        '853': 'DNS-over-TLS',
+        '19302': 'QUIC',
+        '19305': 'QUIC',
+        '22': 'SSH',
+        '21': 'FTP',
+        '25': 'SMTP',
+        '110': 'POP3',
+        '143': 'IMAP',
+        '993': 'IMAPS',
+        '995': 'POP3S',
+        '587': 'SMTP',
+        '465': 'SMTPS',
+        '1194': 'OpenVPN',
+        '1723': 'PPTP',
+        '3389': 'RDP',
+        '5900': 'VNC',
+        '8080': 'HTTP',
+        '8443': 'HTTPS',
+        '123': 'NTP',
+        '161': 'SNMP',
+        '162': 'SNMP',
+        '514': 'Syslog',
+        '5060': 'SIP',
+        '5061': 'SIPS',
+        '5222': 'XMPP',
+        '5223': 'XMPP',
+        '5269': 'XMPP',
+        '6667': 'IRC',
+        '6697': 'IRC',
+        '9987': 'TeamSpeak',
+        '10011': 'TeamSpeak',
+        '30033': 'TeamSpeak',
+        '27015': 'Steam',
+        '27016': 'Steam',
+        '25565': 'Minecraft'
+    }
+    
+    service = common_ports.get(dst_port, f'{protocol.upper()}/{dst_port}')
+    return service
 
 if __name__ == '__main__':
     init_db()

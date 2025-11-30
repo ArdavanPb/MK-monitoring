@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MikroTik Router Monitor</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .router-card {
+            margin-bottom: 20px;
+        }
+        .status-badge {
+            font-size: 0.8rem;
+        }
+        .search-highlight {
+            border-color: #0d6efd !important;
+            box-shadow: 0 0 0 0.2rem rgba(13, 110, 253, 0.25) !important;
+        }
+        .no-results {
+            text-align: center;
+            padding: 20px;
+            color: #6c757d;
+            font-style: italic;
+        }
+        
+        /* Table scroll styling - limit to 10 rows */
+        .table-scroll {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        
+        .table-scroll table {
+            margin-bottom: 0;
+        }
+        
+        .table-scroll thead th {
+            position: sticky;
+            top: 0;
+            background-color: #f8f9fa;
+            z-index: 10;
+        }
+        
+        /* Ensure tables with many rows get scroll bars */
+        .table-responsive.table-scroll {
+            max-height: 400px;
+        }
+        
+        /* Specific styling for monitor page tables */
+        #internalIpTable tbody,
+        #bandwidthTable tbody {
+            max-height: 300px;
+            overflow-y: auto;
+            display: block;
+        }
+        
+        #internalIpTable thead,
+        #bandwidthTable thead {
+            display: table;
+            width: 100%;
+            table-layout: fixed;
+        }
+        
+        #internalIpTable tbody tr,
+        #bandwidthTable tbody tr {
+            display: table;
+            width: 100%;
+            table-layout: fixed;
+        }
+        
+        /* Connections styling */
+        .connection-item {
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6 !important;
+        }
+        
+        .connection-item:hover {
+            background-color: #e9ecef;
+        }
+        
+        .connections-loading {
+            color: #6c757d;
+        }
+        
+        .view-connections-btn {
+            font-size: 0.8rem;
+            padding: 0.25rem 0.5rem;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="{{ url_for('index') }}">MikroTik Monitor</a>
+            <div class="navbar-nav me-auto">
+                <a class="nav-link" href="{{ url_for('index') }}">Dashboard</a>
+                <a class="nav-link" href="{{ url_for('add_router') }}">Add Router</a>
+            </div>
+            <div class="navbar-nav">
+                {% if session.username %}
+                    <span class="navbar-text me-3">Welcome, {{ session.username }}</span>
+                    <a class="nav-link" href="{{ url_for('change_password') }}">Change Password</a>
+                    <a class="nav-link" href="{{ url_for('logout') }}">Logout</a>
+                {% else %}
+                    <a class="nav-link" href="{{ url_for('login') }}">Login</a>
+                {% endif %}
+            </div>
+        </div>
+    </nav>
+
+    <div class="container mt-4">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ 'danger' if category == 'error' else 'success' }} alert-dismissible fade show" role="alert">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        {% block content %}{% endblock %}
+    </div>
+
+    <!-- Troubleshooting Modal -->
+    <div class="modal fade" id="troubleshootingModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Connection Troubleshooting</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <h6>Common Issues:</h6>
+                    <ul>
+                        <li><strong>Timeout:</strong> Network connectivity issue or wrong IP</li>
+                        <li><strong>Connection refused:</strong> API service not enabled on router</li>
+                        <li><strong>Authentication failed:</strong> Wrong username/password or username format issue</li>
+                    </ul>
+                    
+                    <h6>Quick Checks:</h6>
+                    <ol>
+                        <li>Verify router IP address is correct</li>
+                        <li>Ensure API service is enabled on router</li>
+                        <li>Check user has API permissions</li>
+                        <li>Test network connectivity (ping router IP)</li>
+                        <li>Verify port 8728 is accessible</li>
+                    </ol>
+                    
+                    <h6>Router Configuration:</h6>
+                    <pre class="bg-light p-2">
+# Enable API service
+/ip service set api disabled=no
+
+# Create API user (if needed)
+/user add name=api-user password=your-password group=full
+                    </pre>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <script>
+        // Real-time connections functionality
+        document.addEventListener('DOMContentLoaded', function() {
+            // Handle connections button clicks
+            document.querySelectorAll('.view-connections-btn').forEach(button => {
+                button.addEventListener('click', function() {
+                    const routerId = this.getAttribute('data-router-id');
+                    const collapseElement = document.getElementById(`connections-${routerId}`);
+                    const loadingElement = collapseElement.querySelector('.connections-loading');
+                    const contentElement = collapseElement.querySelector('.connections-content');
+                    
+                    // Only load data if it's being shown for the first time
+                    if (collapseElement.classList.contains('show') && !contentElement.innerHTML) {
+                        loadRouterConnections(routerId, loadingElement, contentElement);
+                    }
+                });
+            });
+            
+            // Auto-refresh connections every 30 seconds for visible sections
+            setInterval(() => {
+                document.querySelectorAll('.collapse.show').forEach(collapse => {
+                    const routerId = collapse.id.replace('connections-', '');
+                    const loadingElement = collapse.querySelector('.connections-loading');
+                    const contentElement = collapse.querySelector('.connections-content');
+                    
+                    if (contentElement && contentElement.innerHTML) {
+                        loadRouterConnections(routerId, loadingElement, contentElement);
+                    }
+                });
+            }, 30000);
+        });
+        
+        function loadRouterConnections(routerId, loadingElement, contentElement) {
+            loadingElement.style.display = 'block';
+            contentElement.style.display = 'none';
+            
+            axios.get(`/api/connections/${routerId}`)
+                .then(response => {
+                    if (response.data.success) {
+                        displayConnectionsData(response.data.data, contentElement);
+                    } else {
+                        displayConnectionsError(response.data.error, contentElement);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error loading connections:', error);
+                    displayConnectionsError('Failed to load connection data', contentElement);
+                })
+                .finally(() => {
+                    loadingElement.style.display = 'none';
+                    contentElement.style.display = 'block';
+                });
+        }
+        
+        function displayConnectionsData(connectionsData, contentElement) {
+            if (!connectionsData || connectionsData.length === 0) {
+                contentElement.innerHTML = `
+                    <div class="alert alert-info">
+                        <i class="bi bi-info-circle"></i> No network connections found.
+                    </div>
+                `;
+                return;
+            }
+            
+            let html = '';
+            
+            connectionsData.forEach(connection => {
+                html += `
+                    <div class="connection-item mb-3 p-3 border rounded">
+                        <div class="d-flex justify-content-between align-items-start mb-2">
+                            <div>
+                                <strong>${connection.ip}</strong>
+                                <small class="text-muted ms-2">${connection.network}</small>
+                            </div>
+                            <span class="badge bg-secondary">${connection.interface}</span>
+                        </div>
+                        
+                        <div class="row">
+                            <div class="col-md-6">
+                                <h6 class="mb-2">Connected Clients (${connection.client_count})</h6>
+                                ${connection.clients.length > 0 ? `
+                                    <div class="table-responsive" style="max-height: 200px;">
+                                        <table class="table table-sm table-striped">
+                                            <thead>
+                                                <tr>
+                                                    <th>IP</th>
+                                                    <th>MAC</th>
+                                                    <th>Hostname</th>
+                                                    <th>Status</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                ${connection.clients.map(client => `
+                                                    <tr>
+                                                        <td><code>${client.ip}</code></td>
+                                                        <td><small class="text-muted">${client.mac || 'N/A'}</small></td>
+                                                        <td>${client.hostname || 'N/A'}</td>
+                                                        <td>
+                                                            <span class="badge bg-${client.status === 'bound' ? 'success' : 'warning'}">
+                                                                ${client.status}
+                                                            </span>
+                                                        </td>
+                                                    </tr>
+                                                `).join('')}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                ` : `
+                                    <p class="text-muted"><em>No clients connected</em></p>
+                                `}
+                            </div>
+                            
+                            <div class="col-md-6">
+                                <h6 class="mb-2">Upstream Connection</h6>
+                                <div class="card bg-light">
+                                    <div class="card-body">
+                                        <div class="mb-1">
+                                            <strong>Gateway:</strong> <code>${connection.upstream.gateway}</code>
+                                        </div>
+                                        <div class="mb-1">
+                                            <strong>Interface:</strong> ${connection.upstream.interface}
+                                        </div>
+                                        <div>
+                                            <strong>Type:</strong> 
+                                            <span class="badge bg-${connection.upstream.type === 'default_route' ? 'primary' : 'info'}">
+                                                ${connection.upstream.type.replace('_', ' ')}
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            // Add refresh button
+            html += `
+                <div class="text-center mt-3">
+                    <button class="btn btn-sm btn-outline-secondary refresh-connections" 
+                            onclick="refreshConnections('${routerId}')">
+                        Refresh Connections
+                    </button>
+                </div>
+            `;
+            
+            contentElement.innerHTML = html;
+        }
+        
+        function displayConnectionsError(error, contentElement) {
+            contentElement.innerHTML = `
+                <div class="alert alert-warning">
+                    <i class="bi bi-exclamation-triangle"></i> 
+                    <strong>Connection data unavailable:</strong> ${error}
+                </div>
+                <div class="text-center">
+                    <button class="btn btn-sm btn-outline-secondary" 
+                            onclick="refreshConnections('${routerId}')">
+                        Retry
+                    </button>
+                </div>
+            `;
+        }
+        
+        function refreshConnections(routerId) {
+            const collapseElement = document.getElementById(`connections-${routerId}`);
+            const loadingElement = collapseElement.querySelector('.connections-loading');
+            const contentElement = collapseElement.querySelector('.connections-content');
+            
+            loadRouterConnections(routerId, loadingElement, contentElement);
+        }
+        
+        // Live Firewall Connections functionality
+        document.addEventListener('DOMContentLoaded', function() {
+            // Load firewall connections when monitor page loads
+            const firewallConnectionsLoading = document.getElementById('firewallConnectionsLoading');
+            const firewallConnectionsContent = document.getElementById('firewallConnectionsContent');
+            const refreshButton = document.getElementById('refreshFirewallConnections');
+            
+            if (firewallConnectionsLoading && firewallConnectionsContent) {
+                // Extract router ID from current URL
+                const currentPath = window.location.pathname;
+                const routerIdMatch = currentPath.match(/\/monitor_router\/(\d+)/);
+                if (routerIdMatch) {
+                    const routerId = routerIdMatch[1];
+                    loadFirewallConnections(routerId);
+                    
+                    // Set up refresh button
+                    if (refreshButton) {
+                        refreshButton.addEventListener('click', function() {
+                            loadFirewallConnections(routerId);
+                        });
+                    }
+                    
+                    // Auto-refresh every 30 seconds
+                    setInterval(() => {
+                        loadFirewallConnections(routerId);
+                    }, 30000);
+                }
+            }
+        });
+        
+        function loadFirewallConnections(routerId) {
+            const loadingElement = document.getElementById('firewallConnectionsLoading');
+            const contentElement = document.getElementById('firewallConnectionsContent');
+            const countElement = document.getElementById('liveConnectionsCount');
+            
+            if (!loadingElement || !contentElement) return;
+            
+            loadingElement.style.display = 'block';
+            contentElement.style.display = 'none';
+            
+            axios.get(`/api/firewall-connections/${routerId}`)
+                .then(response => {
+                    if (response.data.success) {
+                        displayFirewallConnectionsData(response.data.data, contentElement, countElement);
+                    } else {
+                        displayFirewallConnectionsError(response.data.error, contentElement, countElement);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error loading firewall connections:', error);
+                    displayFirewallConnectionsError('Failed to load connection data', contentElement, countElement);
+                })
+                .finally(() => {
+                    loadingElement.style.display = 'none';
+                    contentElement.style.display = 'block';
+                });
+        }
+        
+        function displayFirewallConnectionsData(connectionsData, contentElement, countElement) {
+            if (!connectionsData || !connectionsData.connections || connectionsData.connections.length === 0) {
+                contentElement.innerHTML = `
+                    <div class="alert alert-info">
+                        <i class="bi bi-info-circle"></i> No active internet connections found.
+                    </div>
+                `;
+                if (countElement) {
+                    countElement.textContent = '0';
+                }
+                return;
+            }
+            
+            // Update count
+            if (countElement) {
+                countElement.textContent = connectionsData.total_count;
+            }
+            
+            let html = `
+                <div class="table-responsive">
+                    <table class="table table-striped table-hover table-sm">
+                        <thead class="table-dark">
+                            <tr>
+                                <th>Source IP</th>
+                                <th>Destination IP</th>
+                                <th>Protocol</th>
+                                <th>Upload</th>
+                                <th>Download</th>
+                                <th>Duration</th>
+                                <th>Service/App</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+            `;
+            
+            connectionsData.connections.forEach(conn => {
+                html += `
+                    <tr>
+                        <td><code>${conn.src_ip}</code></td>
+                        <td><code>${conn.dst_ip}</code></td>
+                        <td><span class="badge bg-secondary">${conn.protocol}</span></td>
+                        <td><span class="text-primary">${conn.upload_human}</span></td>
+                        <td><span class="text-success">${conn.download_human}</span></td>
+                        <td><small class="text-muted">${conn.duration}</small></td>
+                        <td>${conn.service}</td>
+                    </tr>
+                `;
+            });
+            
+            html += `
+                        </tbody>
+                    </table>
+                </div>
+                <div class="mt-3 text-muted">
+                    <small>Auto-refreshing every 30 seconds. Showing ${connectionsData.total_count} active internet connections.</small>
+                </div>
+            `;
+            
+            // Add grouped view (bonus feature)
+            if (Object.keys(connectionsData.grouped_connections).length > 0) {
+                html += `
+                    <div class="mt-4">
+                        <h6>Grouped by Source IP</h6>
+                        <div class="accordion" id="connectionsAccordion">
+                `;
+                
+                Object.entries(connectionsData.grouped_connections).forEach(([src_ip, group], index) => {
+                    const totalUpload = formatBytes(group.total_upload);
+                    const totalDownload = formatBytes(group.total_download);
+                    
+                    html += `
+                        <div class="accordion-item">
+                            <h2 class="accordion-header" id="heading${index}">
+                                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse${index}" aria-expanded="false" aria-controls="collapse${index}">
+                                    <strong>${src_ip}</strong>
+                                    <span class="badge bg-primary ms-2">${group.connections.length} connections</span>
+                                    <span class="ms-3 text-primary">↑ ${totalUpload}</span>
+                                    <span class="ms-2 text-success">↓ ${totalDownload}</span>
+                                </button>
+                            </h2>
+                            <div id="collapse${index}" class="accordion-collapse collapse" aria-labelledby="heading${index}" data-bs-parent="#connectionsAccordion">
+                                <div class="accordion-body p-0">
+                                    <table class="table table-sm table-striped mb-0">
+                                        <thead>
+                                            <tr>
+                                                <th>Destination</th>
+                                                <th>Protocol</th>
+                                                <th>Upload</th>
+                                                <th>Download</th>
+                                                <th>Duration</th>
+                                                <th>Service</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                    `;
+                    
+                    group.connections.forEach(conn => {
+                        html += `
+                            <tr>
+                                <td><code>${conn.dst_ip}</code></td>
+                                <td><span class="badge bg-secondary">${conn.protocol}</span></td>
+                                <td><span class="text-primary">${conn.upload_human}</span></td>
+                                <td><span class="text-success">${conn.download_human}</span></td>
+                                <td><small class="text-muted">${conn.duration}</small></td>
+                                <td>${conn.service}</td>
+                            </tr>
+                        `;
+                    });
+                    
+                    html += `
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                });
+                
+                html += `
+                        </div>
+                    </div>
+                `;
+            }
+            
+            contentElement.innerHTML = html;
+        }
+        
+        function displayFirewallConnectionsError(error, contentElement, countElement) {
+            contentElement.innerHTML = `
+                <div class="alert alert-warning">
+                    <i class="bi bi-exclamation-triangle"></i> 
+                    <strong>Connection data unavailable:</strong> ${error}
+                </div>
+            `;
+            if (countElement) {
+                countElement.textContent = '0';
+            }
+        }
+        
+        // Helper function for client-side byte formatting
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(1024));
+            return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
+        }
+    </script>
+</body>
+</html>
