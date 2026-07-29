@@ -1,1311 +1,195 @@
 {% extends "base.html" %}
-
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
     <div>
         <h1>Router Monitoring: {{ router.name }}</h1>
-        <small class="text-muted">Auto-refreshing every 60 seconds</small>
+        <small class="text-muted">
+            {% if source_type == 'SNMP' %}SNMP data{% else %}API data{% endif %}
+            &mdash; Connected via <strong>{{ source_label }}</strong> on port {{ source_port }}
+        </small>
+        <span class="badge bg-{{ 'success' if source_type == 'API' else 'warning' }} ms-2">{{ source_label }}</span>
+        {% if router.snmp_enabled and source_type == 'API' %}<span class="badge bg-success ms-2">SNMP Available</span>{% endif %}
     </div>
     <div>
-        <a href="{{ url_for('index') }}" class="btn btn-secondary">Back to Dashboard</a>
+        <a href="{{ url_for('index') }}" class="btn btn-secondary">Dashboard</a>
         <a href="{{ url_for('refresh_router', router_id=router.id) }}" class="btn btn-outline-primary">Refresh</a>
-    </div>
-</div>
-
-<div class="row">
-    <!-- System Information -->
-    <div class="col-md-6">
-        <div class="card mb-4">
-            <div class="card-header">
-                <h5 class="card-title mb-0">System Identity</h5>
-            </div>
-            <div class="card-body">
-                <table class="table table-sm">
-                    <tr>
-                        <th>Router Name:</th>
-                        <td>{{ info.identity.name if info.identity.name else 'N/A' }}</td>
-                    </tr>
-                    <tr>
-                        <th>Firmware:</th>
-                        <td>{{ info.resources.version if info.resources.version else 'N/A' }}</td>
-                    </tr>
-                    <tr>
-                        <th>Architecture:</th>
-                        <td>{{ info.resources.architecture_name if info.resources.architecture_name else 'N/A' }}</td>
-                    </tr>
-                    <tr>
-                        <th>Board Name:</th>
-                        <td>{{ info.resources.board_name if info.resources.board_name else 'N/A' }}</td>
-                    </tr>
-                    <tr>
-                        <th>Platform:</th>
-                        <td>{{ info.resources.platform if info.resources.platform else 'N/A' }}</td>
-                    </tr>
-                    {% if info.resources.build_time %}
-                    <tr>
-                        <th>Build Time:</th>
-                        <td>{{ info.resources.build_time }}</td>
-                    </tr>
-                    {% endif %}
-                    {% if info.resources.factory_software %}
-                    <tr>
-                        <th>Factory Software:</th>
-                        <td>{{ info.resources.factory_software }}</td>
-                    </tr>
-                    {% endif %}
-                </table>
-            </div>
-        </div>
-
-        <!-- System Resources -->
-        <div class="card mb-4">
-            <div class="card-header">
-                <h5 class="card-title mb-0">System Resources</h5>
-            </div>
-            <div class="card-body">
-                <table class="table table-sm">
-                    <tr>
-                        <th>Uptime:</th>
-                        <td>{{ info.resources.uptime if info.resources.uptime else 'N/A' }}</td>
-                    </tr>
-                    <tr>
-                        <th>CPU Load:</th>
-                        <td>
-                            {% if info.resources.cpu_load %}
-                                <span class="badge bg-{{ 'success' if info.resources.cpu_load|float < 50 else 'warning' if info.resources.cpu_load|float < 80 else 'danger' }}">
-                                    {{ info.resources.cpu_load }}%
-                                </span>
-                            {% else %}
-                                <span class="badge bg-secondary">N/A</span>
-                            {% endif %}
-                        </td>
-                    </tr>
-                    <tr>
-                        <th>CPU Cores:</th>
-                        <td>{{ info.resources.cpu_count if info.resources.cpu_count else 'N/A' }}</td>
-                    </tr>
-                    {% if info.resources.cpu_frequency %}
-                    <tr>
-                        <th>CPU Frequency:</th>
-                        <td>{{ info.resources.cpu_frequency }} MHz</td>
-                    </tr>
-                    {% endif %}
-                    <tr>
-                        <th>Memory Usage:</th>
-                        <td>
-                            {% if info.resources.total_memory and info.resources.total_memory != 'N/A' and info.resources.used_memory and info.resources.used_memory != 'N/A' %}
-                                {% set total_mem = info.resources.total_memory|int / 1024 / 1024 %}
-                                {% set used_mem = info.resources.used_memory|int / 1024 / 1024 %}
-                                {% set usage_percent = (used_mem / total_mem * 100)|round(1) %}
-                                <div class="progress" style="height: 20px;">
-                                    <div class="progress-bar bg-{{ 'success' if usage_percent < 70 else 'warning' if usage_percent < 85 else 'danger' }}" 
-                                         role="progressbar" 
-                                         style="width: {{ usage_percent }}%" 
-                                         aria-valuenow="{{ usage_percent }}" 
-                                         aria-valuemin="0" 
-                                         aria-valuemax="100">
-                                        {{ usage_percent }}%
-                                    </div>
-                                </div>
-                                <small class="text-muted">{{ used_mem|round(1) }}MB / {{ total_mem|round(1) }}MB</small>
-                            {% else %}
-                                <span class="text-muted">Memory data not available</span>
-                            {% endif %}
-                        </td>
-                    </tr>
-                    <tr>
-                        <th>Free Memory:</th>
-                        <td>
-                            {% if info.resources.free_memory and info.resources.free_memory != 'N/A' %}
-                                {{ (info.resources.free_memory|int / 1024 / 1024)|round(1) }}MB
-                            {% else %}
-                                <span class="text-muted">N/A</span>
-                            {% endif %}
-                        </td>
-                    </tr>
-                </table>
-            </div>
-        </div>
-    </div>
-
-    <!-- System Clock & Additional Info -->
-    <div class="col-md-6">
-        <div class="card mb-4">
-            <div class="card-header">
-                <h5 class="card-title mb-0">System Clock</h5>
-            </div>
-            <div class="card-body">
-                <table class="table table-sm">
-                    <tr>
-                        <th>Date:</th>
-                        <td>{{ info.clock.date if info.clock.date else 'N/A' }}</td>
-                    </tr>
-                    <tr>
-                        <th>Time:</th>
-                        <td>{{ info.clock.time if info.clock.time else 'N/A' }}</td>
-                    </tr>
-                    <tr>
-                        <th>Timezone:</th>
-                        <td>{{ info.clock.time_zone_name if info.clock.time_zone_name else 'N/A' }}</td>
-                    </tr>
-                </table>
-            </div>
-        </div>
-
-        <!-- System Health -->
-        {% if info.health %}
-        <div class="card mb-4">
-            <div class="card-header">
-                <h5 class="card-title mb-0">System Health</h5>
-            </div>
-            <div class="card-body">
-                <table class="table table-sm">
-                    {% if info.health.temperature %}
-                    <tr>
-                        <th>Temperature:</th>
-                        <td>
-                            <span class="badge bg-{{ 'success' if info.health.temperature|float < 60 else 'warning' if info.health.temperature|float < 70 else 'danger' }}">
-                                {{ info.health.temperature }}°C
-                            </span>
-                        </td>
-                    </tr>
-                    {% endif %}
-                    {% if info.health.cpu_temperature %}
-                    <tr>
-                        <th>CPU Temp:</th>
-                        <td>
-                            <span class="badge bg-{{ 'success' if info.health.cpu_temperature|float < 60 else 'warning' if info.health.cpu_temperature|float < 70 else 'danger' }}">
-                                {{ info.health.cpu_temperature }}°C
-                            </span>
-                        </td>
-                    </tr>
-                    {% endif %}
-                    {% if info.health.power_consumption %}
-                    <tr>
-                        <th>Power:</th>
-                        <td>{{ info.health.power_consumption }}W</td>
-                    </tr>
-                    {% endif %}
-                </table>
-            </div>
-        </div>
+        {% if session.role in ('admin','operator') and source_type != 'SNMP' %}
+            <a href="{{ url_for('trigger_backup', router_id=router.id) }}" class="btn btn-outline-warning" onclick="return confirm('Run backup now?')">Backup Now</a>
+            <a href="{{ url_for('edit_router', router_id=router.id) }}" class="btn btn-outline-info">Edit</a>
         {% endif %}
-
-        <!-- License Information -->
-        {% if info.license %}
-        <div class="card mb-4">
-            <div class="card-header">
-                <h5 class="card-title mb-0">License Information</h5>
-            </div>
-            <div class="card-body">
-                <table class="table table-sm">
-                    {% if info.license.software_id %}
-                    <tr>
-                        <th>Software ID:</th>
-                        <td><code>{{ info.license.software_id }}</code></td>
-                    </tr>
-                    {% endif %}
-                    {% if info.license.level %}
-                    <tr>
-                        <th>Level:</th>
-                        <td>{{ info.license.level }}</td>
-                    </tr>
-                    {% endif %}
-                    {% if info.license.nlevel %}
-                    <tr>
-                        <th>N-Level:</th>
-                        <td>{{ info.license.nlevel }}</td>
-                    </tr>
-                    {% endif %}
-                    {% if info.license.features %}
-                    <tr>
-                        <th>Features:</th>
-                        <td>{{ info.license.features }}</td>
-                    </tr>
-                    {% endif %}
-                </table>
-            </div>
-        </div>
-        {% endif %}
-
     </div>
 </div>
 
-<!-- System Logs Summary -->
-<div class="card mb-4">
-    <div class="card-header">
-        <h5 class="card-title mb-0">System Logs</h5>
-    </div>
-    <div class="card-body">
-        <div class="row text-center mb-3">
-            <div class="col-3">
-                <h4 class="text-primary">{{ log_stats.total }}</h4>
-                <small class="text-muted">Total Logs</small>
-            </div>
-            <div class="col-3">
-                <h4 class="text-danger">{{ log_stats.severities.critical }}</h4>
-                <small class="text-muted">Critical</small>
-            </div>
-            <div class="col-3">
-                <h4 class="text-warning">{{ log_stats.severities.error }}</h4>
-                <small class="text-muted">Errors</small>
-            </div>
-            <div class="col-3">
-                <h4 class="text-info">{{ log_stats.severities.warning }}</h4>
-                <small class="text-muted">Warnings</small>
-            </div>
-        </div>
-        
-        <div class="mb-3">
-            <h6>Log Categories:</h6>
-            {% if log_stats.categories %}
-                {% for category, count in log_stats.categories.items() %}
-                    {% if loop.index <= 5 %}  <!-- Show top 5 categories -->
-                    <div class="d-flex justify-content-between align-items-center mb-1">
-                        <span class="small">{{ category }}</span>
-                        <span class="badge bg-secondary">{{ count }}</span>
-                    </div>
-                    {% endif %}
-                {% endfor %}
-                {% if log_stats.categories|length > 5 %}
-                    <div class="text-center mt-2">
-                        <small class="text-muted">+{{ log_stats.categories|length - 5 }} more categories</small>
-                    </div>
-                {% endif %}
-            {% else %}
-                <p class="text-muted small">No log categories found</p>
-            {% endif %}
-        </div>
-        
-        <div class="d-grid">
-            <a href="{{ url_for('router_logs', router_id=router.id) }}" class="btn btn-outline-primary btn-sm">
-                View All Logs
-            </a>
-        </div>
-    </div>
-</div>
-
-<!-- Network Information Row -->
-<div class="row">
-    <!-- IP Addresses with MAC & ARP -->
-    <div class="col-md-6">
-        <div class="card mb-4">
-            <div class="card-header">
-                <h5 class="card-title mb-0">IP Addresses ({{ info.ip_addresses|length }})</h5>
-            </div>
-            <div class="card-body">
-                {% if info.ip_addresses %}
-                    <div class="table-responsive table-scroll">
-                        <table class="table table-striped table-sm">
-                            <thead>
-                                <tr>
-                                    <th>Address</th>
-                                    <th>Network</th>
-                                    <th>Interface</th>
-                                    <th>MAC Address</th>
-                                    <th>Hostname</th>
-                                    <th>Type</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {% for ip in info.ip_addresses %}
-                                <tr>
-                                    <td><code>{{ ip.address }}</code></td>
-                                    <td><code>{{ ip.network }}</code></td>
-                                    <td>{{ ip.interface }}</td>
-                                    <td>
-                                        {% set found_mac = false %}
-                                        {% for arp in info.arp_table %}
-                                            {% if arp.address == ip.address and arp['mac-address'] %}
-                                                {% set found_mac = true %}
-                                                <code>{{ arp['mac-address'] }}</code>
-                                            {% endif %}
-                                        {% endfor %}
-                                        {% if not found_mac %}
-                                            <span class="text-muted">N/A</span>
-                                        {% endif %}
-                                    </td>
-                                    <td>
-                                        {% set found_hostname = false %}
-                                        {% for arp in info.arp_table %}
-                                            {% if arp.address == ip.address and arp['host-name'] %}
-                                                {% set found_hostname = true %}
-                                                {{ arp['host-name'] }}
-                                            {% endif %}
-                                        {% endfor %}
-                                        {% if not found_hostname %}
-                                            {% for lease in info.dhcp_leases %}
-                                                {% if lease.address == ip.address and lease['host-name'] %}
-                                                    {% set found_hostname = true %}
-                                                    {{ lease['host-name'] }}
-                                                {% endif %}
-                                            {% endfor %}
-                                        {% endif %}
-                                        {% if not found_hostname %}
-                                            <span class="text-muted">N/A</span>
-                                        {% endif %}
-                                    </td>
-                                    <td>
-                                        {% if ip.dynamic == 'true' %}
-                                            <span class="badge bg-info">Dynamic</span>
-                                        {% else %}
-                                            <span class="badge bg-secondary">Static</span>
-                                        {% endif %}
-                                    </td>
-                                </tr>
-                                {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
-                {% else %}
-                    <p class="text-muted">No IP addresses found</p>
-                {% endif %}
-            </div>
-        </div>
-    </div>
-
-    <!-- Interfaces -->
-    <div class="col-md-6">
-        <div class="card mb-4">
-            <div class="card-header">
-                <h5 class="card-title mb-0">Interfaces ({{ info.interfaces|length }})</h5>
-            </div>
-            <div class="card-body">
-                {% if info.interfaces %}
-                    <div class="table-responsive table-scroll">
-                        <table class="table table-striped table-sm">
-                            <thead>
-                                <tr>
-                                    <th>Name</th>
-                                    <th>Type</th>
-                                    <th>Status</th>
-                                    <th>MTU</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {% for interface in info.interfaces %}
-                                <tr style="cursor: pointer;" onclick="showInterfaceBandwidthChart('{{ interface.name }}')" title="Click to view bandwidth chart">
-                                    <td>
-                                        <strong>{{ interface.name }}</strong>
-                                        <small class="text-muted d-block">Click to view bandwidth</small>
-                                    </td>
-                                    <td><span class="badge bg-secondary">{{ interface.type }}</span></td>
-                                    <td>
-                                        {% if interface.running == 'true' %}
-                                            <span class="badge bg-success">Up</span>
-                                        {% else %}
-                                            <span class="badge bg-danger">Down</span>
-                                        {% endif %}
-                                    </td>
-                                    <td>{{ interface.mtu if interface.mtu else 'N/A' }}</td>
-                                </tr>
-                                {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
-                {% else %}
-                    <p class="text-muted">No interfaces found</p>
-                {% endif %}
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- Debug Information (remove in production) -->
-{% if false %}  <!-- Set to true to enable debug info -->
-<div class="card mb-4">
-    <div class="card-header">
-        <h5 class="card-title mb-0">Debug Information</h5>
-    </div>
-    <div class="card-body">
-        <h6>DHCP Leases ({{ info.dhcp_leases|length }}):</h6>
-        <pre>{{ info.dhcp_leases|tojson(indent=2) }}</pre>
-        
-        <h6>ARP Table ({{ info.arp_table|length }}):</h6>
-        <pre>{{ info.arp_table|tojson(indent=2) }}</pre>
-    </div>
+{% if info.api_errors %}
+<div class="alert alert-danger">
+    <strong>API Errors detected — some data may be missing:</strong>
+    <ul class="mb-0 mt-1">{% for err in info.api_errors %}<li><small>{{ err }}</small></li>{% endfor %}</ul>
+    <small class="text-muted">Check router user permissions. The API user needs read access to all resources.</small>
 </div>
 {% endif %}
 
-<!-- Internal IP Addresses -->
-<div class="row">
-    <!-- DHCP Leases -->
-    <div class="col-md-12">
-        <div class="card mb-4">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="card-title mb-0">Internal IP Addresses ({{ info.dhcp_leases|length }})</h5>
-                <div class="d-flex gap-2">
-                    <input type="text" id="internalIpSearch" class="form-control form-control-sm" placeholder="Search IP, MAC, or Hostname..." style="width: 250px;">
-                    <select id="internalIpSort" class="form-select form-select-sm" style="width: 150px;">
-                        <option value="ip">Sort by IP</option>
-                        <option value="hostname">Sort by Hostname</option>
-                        <option value="status">Sort by Status</option>
-                    </select>
-                </div>
-            </div>
-            <div class="card-body">
-                {% if info.dhcp_leases %}
-                    <div class="table-responsive table-scroll">
-                        <table class="table table-striped table-sm" id="internalIpTable">
-                            <thead>
-                                <tr>
-                                    <th>IP Address</th>
-                                    <th>MAC Address</th>
-                                    <th>Hostname</th>
-                                    <th>Status</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {% for lease in info.dhcp_leases %}
-                                <tr>
-                                    <td><code>{{ lease.address }}</code></td>
-                                    <td><code>{{ lease['mac-address'] }}</code></td>
-                                    <td>{{ lease['host-name'] if lease['host-name'] else 'N/A' }}</td>
-                                    <td>
-                                        {% if lease.status == 'bound' %}
-                                            <span class="badge bg-success">Bound</span>
-                                        {% elif lease.status == 'waiting' %}
-                                            <span class="badge bg-warning">Waiting</span>
-                                        {% else %}
-                                            <span class="badge bg-secondary">{{ lease.status }}</span>
-                                        {% endif %}
-                                    </td>
-                                </tr>
-                                {% endfor %}
-                            </tbody>
+<!-- Debug info: raw resource keys -->
+{% if info.resources and info.resources.keys() %}
+<div class="small text-muted mb-2">Resource fields: {{ info.resources.keys()|list }}</div>
+{% endif %}
+
+<ul class="nav nav-tabs mb-4" id="monitorTabs" role="tablist">
+    <li class="nav-item"><button class="nav-link active" id="system-tab" data-bs-toggle="tab" data-bs-target="#system">System</button></li>
+    <li class="nav-item"><button class="nav-link" id="addresses-tab" data-bs-toggle="tab" data-bs-target="#addresses">Addresses & Interfaces</button></li>
+    <li class="nav-item"><button class="nav-link" id="bandwidth-tab" data-bs-toggle="tab" data-bs-target="#bandwidth">Bandwidth</button></li>
+    <li class="nav-item"><button class="nav-link" id="alerts-tab" data-bs-toggle="tab" data-bs-target="#alerts">Alerts <span class="badge bg-danger" id="alertCount">{{ alerts|selectattr('status','equalto','active')|list|length }}</span></button></li>
+    <li class="nav-item"><button class="nav-link" id="backups-tab" data-bs-toggle="tab" data-bs-target="#backups">Backups</button></li>
+    <li class="nav-item"><button class="nav-link" id="logs-tab" data-bs-toggle="tab" data-bs-target="#logs">Logs</button></li>
+</ul>
+
+<div class="tab-content">
+    <div class="tab-pane fade show active" id="system">
+        <div class="row">
+            <div class="col-md-6">
+                <div class="card mb-4">
+                    <div class="card-header"><h5>System Identity</h5></div>
+                    <div class="card-body">
+                        <table class="table table-sm">
+                            <tr><th>Router Name:</th><td>{{ info.identity.name if info.identity and info.identity.name else 'No data' }}</td></tr>
+                            <tr><th>Firmware:</th><td>{{ info.resources.version if info.resources and info.resources.version and info.resources.version != 'N/A' else 'No data' }}</td></tr>
+                            <tr><th>Architecture:</th><td>{{ info.resources.architecture_name if info.resources and info.resources.architecture_name and info.resources.architecture_name != 'N/A' else 'No data' }}</td></tr>
+                            <tr><th>Board Name:</th><td>{{ info.resources.board_name if info.resources and info.resources.board_name and info.resources.board_name != 'N/A' else 'No data' }}</td></tr>
+                            <tr><th>Platform:</th><td>{{ info.resources.platform if info.resources and info.resources.platform else 'No data' }}</td></tr>
                         </table>
                     </div>
-                {% else %}
-                    <p class="text-muted">No DHCP leases found</p>
+                </div>
+                <div class="card mb-4">
+                    <div class="card-header"><h5>System Resources</h5></div>
+                    <div class="card-body">
+                        <table class="table table-sm">
+                            <tr><th>Uptime:</th><td>{{ info.resources.uptime if info.resources and info.resources.uptime else 'No data' }}</td></tr>
+                            <tr><th>CPU Load:</th><td>{% if info.resources and info.resources.cpu_load and info.resources.cpu_load != 'N/A' %}<span class="badge bg-{{ 'success' if info.resources.cpu_load|float < 50 else 'warning' if info.resources.cpu_load|float < 80 else 'danger' }}">{{ info.resources.cpu_load }}%</span>{% else %}<span class="text-muted">No data</span>{% endif %}</td></tr>
+                            <tr><th>CPU Cores:</th><td>{{ info.resources.cpu_count if info.resources and info.resources.cpu_count and info.resources.cpu_count != 'N/A' else 'No data' }}</td></tr>
+                            <tr><th>Memory:</th><td>{% if info.resources and info.resources.total_memory and info.resources.total_memory != 'N/A' and info.resources.used_memory and info.resources.used_memory != 'N/A' %}{% set tm = info.resources.total_memory|int / 1048576 %}{% set um = info.resources.used_memory|int / 1048576 %}{% set pct = (um / tm * 100)|round(1) %}<div class="progress" style="height:20px"><div class="progress-bar bg-{{ 'success' if pct < 70 else 'warning' if pct < 85 else 'danger' }}" style="width:{{ pct }}%">{{ pct }}%</div></div><small class="text-muted">{{ um|round(1) }}MB / {{ tm|round(1) }}MB</small>{% else %}<span class="text-muted">No data</span>{% endif %}</td></tr>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                {% if info.clock %}
+                <div class="card mb-4">
+                    <div class="card-header"><h5>System Clock</h5></div>
+                    <div class="card-body"><table class="table table-sm">
+                        <tr><th>Date:</th><td>{{ info.clock.date if info.clock.date else 'No data' }}</td></tr>
+                        <tr><th>Time:</th><td>{{ info.clock.time if info.clock.time else 'No data' }}</td></tr>
+                        <tr><th>Timezone:</th><td>{{ info.clock.time_zone_name if info.clock.time_zone_name else 'No data' }}</td></tr>
+                    </table></div>
+                </div>
+                {% endif %}
+                {% if info.health %}
+                <div class="card mb-4">
+                    <div class="card-header"><h5>Health</h5></div>
+                    <div class="card-body">{% if info.health.temperature or info.health.cpu_temperature %}<table class="table table-sm">{% if info.health.temperature %}<tr><th>Temperature:</th><td><span class="badge bg-{{ 'success' if info.health.temperature|float < 60 else 'warning' if info.health.temperature|float < 70 else 'danger' }}">{{ info.health.temperature }}°C</span></td></tr>{% endif %}{% if info.health.cpu_temperature %}<tr><th>CPU Temp:</th><td><span class="badge bg-{{ 'success' if info.health.cpu_temperature|float < 60 else 'warning' if info.health.cpu_temperature|float < 70 else 'danger' }}">{{ info.health.cpu_temperature }}°C</span></td></tr>{% endif %}</table>{% else %}<span class="text-muted">No health data</span>{% endif %}</div>
+                </div>
                 {% endif %}
             </div>
         </div>
     </div>
-</div>
 
-<!-- Live Firewall Connections -->
-<div class="row">
-    <div class="col-md-12">
+    <div class="tab-pane fade" id="addresses">
+        <div class="row">
+            <div class="col-md-6">
+                <div class="card mb-4">
+                    <div class="card-header"><h5>IP Addresses ({{ info.ip_addresses|length }})</h5></div>
+                    <div class="card-body">{% if info.ip_addresses %}<div class="table-responsive table-scroll"><table class="table table-striped table-sm"><thead><tr><th>Address</th><th>Interface</th></tr></thead><tbody>{% for ip in info.ip_addresses %}<tr><td><code>{{ ip.address }}</code></td><td>{{ ip.interface }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="text-muted">No IP addresses found</p>{% endif %}</div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card mb-4">
+                    <div class="card-header"><h5>Interfaces ({{ info.interfaces|length }})</h5></div>
+                    <div class="card-body">{% if info.interfaces %}<div class="table-responsive table-scroll"><table class="table table-striped table-sm"><thead><tr><th>Name</th><th>Type</th><th>Status</th></tr></thead><tbody>{% for iface in info.interfaces %}<tr><td><strong>{{ iface.name }}</strong></td><td><span class="badge bg-secondary">{{ iface.type }}</span></td><td>{% if iface.running == 'true' %}<span class="badge bg-success">Up</span>{% else %}<span class="badge bg-danger">Down</span>{% endif %}</td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="text-muted">No interfaces found</p>{% endif %}</div>
+                </div>
+            </div>
+        </div>
+        <div class="card mb-4">
+            <div class="card-header"><h5>DHCP Leases ({{ info.dhcp_leases|length }})</h5></div>
+            <div class="card-body">{% if info.dhcp_leases %}<div class="table-responsive table-scroll"><table class="table table-striped table-sm"><thead><tr><th>IP</th><th>MAC</th><th>Hostname</th><th>Status</th></tr></thead><tbody>{% for lease in info.dhcp_leases %}<tr><td><code>{{ lease.address }}</code></td><td><code>{{ lease['mac-address'] }}</code></td><td>{{ lease['host-name'] if lease['host-name'] else 'N/A' }}</td><td><span class="badge bg-{{ 'success' if lease.status == 'bound' else 'warning' }}">{{ lease.status }}</span></td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="text-muted">No DHCP leases found</p>{% endif %}</div>
+        </div>
+    </div>
+
+    <div class="tab-pane fade" id="bandwidth">
         <div class="card mb-4">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="card-title mb-0">Live Connections (Firewall)</h5>
-                <div class="d-flex gap-2">
-                    <button class="btn btn-sm btn-outline-info" id="refreshFirewallConnections">
-                        Refresh
-                    </button>
-                    <span class="badge bg-primary" id="liveConnectionsCount">0</span>
-                </div>
+                <h5>Per-IP Bandwidth Usage</h5>
+                <div class="dropdown"><button class="btn btn-outline-secondary dropdown-toggle btn-sm" data-bs-toggle="dropdown">{% for pid, plabel in time_periods %}{% if pid == selected_period %}{{ plabel }}{% endif %}{% endfor %}</button><ul class="dropdown-menu">{% for pid, plabel in time_periods %}<li><a class="dropdown-item {% if pid == selected_period %}active{% endif %}" href="{{ url_for('monitor_router', router_id=router.id, period=pid) }}">{{ plabel }}</a></li>{% endfor %}</ul></div>
             </div>
-            <div class="card-body">
-                <div class="firewall-connections-loading text-center py-3" id="firewallConnectionsLoading">
-                    <div class="spinner-border spinner-border-sm" role="status">
-                        <span class="visually-hidden">Loading...</span>
-                    </div>
-                    <span class="ms-2">Loading live connections...</span>
-                </div>
-                <div class="firewall-connections-content" id="firewallConnectionsContent" style="display: none;">
-                    <!-- Content will be populated by JavaScript -->
-                </div>
-            </div>
+            <div class="card-body">{% if bandwidth_stats and selected_period in bandwidth_stats and bandwidth_stats[selected_period] %}<div class="table-responsive table-scroll"><table class="table table-striped table-sm"><thead><tr><th>IP Address</th><th>Upload</th><th>Download</th></tr></thead><tbody>{% for ip, s in bandwidth_stats[selected_period].items() %}<tr onclick="showBandwidthChart('{{ ip }}')" style="cursor:pointer"><td><code>{{ ip }}</code></td><td><span class="badge bg-warning">{{ "%.2f"|format(s.tx_mb * 8) }} Mbps</span></td><td><span class="badge bg-info">{{ "%.2f"|format(s.rx_mb * 8) }} Mbps</span></td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="text-muted">No bandwidth data available. Collector fetches every 60s.</p>{% endif %}</div>
+        </div>
+        <div class="card mb-4" id="bandwidthChartSection" style="display:none"><div class="card-header"><h5>Bandwidth Chart</h5></div><div class="card-body"><canvas id="bandwidthChart" height="200"></canvas><button class="btn btn-sm btn-outline-secondary mt-2" onclick="document.getElementById('bandwidthChartSection').style.display='none'">Close</button></div></div>
+    </div>
+
+    <div class="tab-pane fade" id="alerts">
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center"><h5>Alert Rules</h5>{% if session.role in ('admin','operator') %}<button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addAlertRuleModal">Add Rule</button>{% endif %}</div>
+            <div class="card-body"><div id="alertRulesContainer"><p class="text-muted">Loading...</p></div></div>
+        </div>
+        <div class="card">
+            <div class="card-header"><h5>Alert Events</h5></div>
+            <div class="card-body">{% if alerts %}<div class="table-responsive"><table class="table table-sm table-striped"><thead><tr><th>Time</th><th>Type</th><th>Message</th><th>Status</th><th>Action</th></tr></thead><tbody>{% for a in alerts %}<tr><td><small>{{ a.triggered_at }}</small></td><td><span class="badge bg-info">{{ a.metric_type }}</span></td><td><small>{{ a.message[:100] }}</small></td><td>{% if a.status == 'active' %}<span class="badge bg-danger">Active</span>{% elif a.status == 'acknowledged' %}<span class="badge bg-warning">Acknowledged</span>{% else %}<span class="badge bg-success">Resolved</span>{% endif %}</td><td>{% if a.status == 'active' and session.role in ('admin','operator') %}<button class="btn btn-sm btn-outline-secondary" onclick="acknowledgeAlert({{ a.id }})">Acknowledge</button>{% endif %}</td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="text-muted">No alert events</p>{% endif %}</div>
+        </div>
+    </div>
+
+    <div class="tab-pane fade" id="backups">
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center"><h5>Backups</h5><div>{% if session.role in ('admin','operator') and source_type != 'SNMP' %}<a href="{{ url_for('trigger_backup', router_id=router.id) }}" class="btn btn-primary btn-sm" onclick="return confirm('Run backup?')">Run Backup</a>{% endif %}<a href="{{ url_for('backup_diff', router_id=router.id) }}" class="btn btn-outline-info btn-sm ms-1">Compare Last Two</a></div></div>
+            <div class="card-body">{% if backups %}<div class="table-responsive"><table class="table table-sm table-striped"><thead><tr><th>Filename</th><th>Size</th><th>Date</th></tr></thead><tbody>{% for b in backups %}<tr><td><code>{{ b.filename }}</code></td><td>{{ (b.size/1024)|round(1) }} KB</td><td>{{ b.mtime }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="text-muted">No backups</p>{% endif %}</div>
+        </div>
+    </div>
+
+    <div class="tab-pane fade" id="logs">
+        <div class="card mb-4">
+            <div class="card-header"><h5>Logs Summary</h5></div>
+            <div class="card-body"><div class="row text-center"><div class="col-3"><h4 class="text-primary">{{ log_stats.total }}</h4><small>Total</small></div><div class="col-3"><h4 class="text-danger">{{ log_stats.severities.critical or 0 }}</h4><small>Critical</small></div><div class="col-3"><h4 class="text-warning">{{ log_stats.severities.error or 0 }}</h4><small>Errors</small></div><div class="col-3"><h4 class="text-info">{{ log_stats.severities.warning or 0 }}</h4><small>Warnings</small></div></div><div class="d-grid mt-3"><a href="{{ url_for('router_logs', router_id=router.id) }}" class="btn btn-outline-primary">View All Logs</a></div></div>
         </div>
     </div>
 </div>
 
-<!-- Bandwidth Chart -->
-<div class="card mb-4" id="bandwidthChartSection" style="display: none;">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <h5 class="card-title mb-0">IP Bandwidth Usage Chart</h5>
-        <div class="d-flex gap-2">
-            <select id="chartTimePeriod" class="form-select form-select-sm" style="width: 150px;">
-                <option value="1h">Last 1 hour</option>
-                <option value="3h">Last 3 hours</option>
-                <option value="6h">Last 6 hours</option>
-                <option value="12h">Last 12 hours</option>
-                <option value="24h">Last 24 hours</option>
-                <option value="3d">Last 3 days</option>
-                <option value="1w">Last 1 week</option>
-            </select>
-            <button type="button" class="btn btn-sm btn-outline-secondary" id="closeChart">
-                <i class="fas fa-times"></i> Close Chart
-            </button>
-        </div>
-    </div>
-    <div class="card-body">
-        <div class="chart-container" style="position: relative; height: 300px;">
-            <canvas id="bandwidthChart"></canvas>
-        </div>
-        <div class="mt-3 text-center">
-            <small class="text-muted" id="chartInfo">Showing bandwidth usage for: <span id="chartIpAddress"></span></small>
-        </div>
-    </div>
-</div>
-
-<!-- Interface Bandwidth Chart -->
-<div class="card mb-4" id="interfaceBandwidthChartSection" style="display: none;">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <h5 class="card-title mb-0">Interface Bandwidth Usage Chart</h5>
-        <div class="d-flex gap-2">
-            <select id="interfaceChartTimePeriod" class="form-select form-select-sm" style="width: 150px;">
-                <option value="1h">Last 1 hour</option>
-                <option value="3h">Last 3 hours</option>
-                <option value="6h">Last 6 hours</option>
-                <option value="12h">Last 12 hours</option>
-                <option value="24h">Last 24 hours</option>
-                <option value="3d">Last 3 days</option>
-                <option value="1w">Last 1 week</option>
-            </select>
-            <button type="button" class="btn btn-sm btn-outline-secondary" id="closeInterfaceChart">
-                <i class="fas fa-times"></i> Close Chart
-            </button>
-        </div>
-    </div>
-    <div class="card-body">
-        <div class="chart-container" style="position: relative; height: 300px;">
-            <canvas id="interfaceBandwidthChart"></canvas>
-        </div>
-        <div class="mt-3 text-center">
-            <small class="text-muted" id="interfaceChartInfo">Showing bandwidth usage for: <span id="chartInterfaceName"></span></small>
-        </div>
-    </div>
-</div>
-
-<!-- Per-IP Bandwidth Monitoring -->
-<div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <h5 class="card-title mb-0">Per-IP Bandwidth Usage (Internal IPs Only)</h5>
-        <div class="d-flex gap-2">
-            <div class="dropdown">
-                <button class="btn btn-outline-secondary dropdown-toggle" type="button" id="timePeriodDropdown" data-bs-toggle="dropdown" aria-expanded="false">
-                    {% for period_id, period_label in time_periods %}
-                        {% if period_id == selected_period %}
-                            {{ period_label }}
-                        {% endif %}
-                    {% endfor %}
-                </button>
-                <ul class="dropdown-menu" aria-labelledby="timePeriodDropdown">
-                    {% for period_id, period_label in time_periods %}
-                    <li>
-                        <a class="dropdown-item {% if period_id == selected_period %}active{% endif %}" 
-                           href="{{ url_for('monitor_router', router_id=router.id, period=period_id) }}">
-                            {{ period_label }}
-                        </a>
-                    </li>
-                    {% endfor %}
-                </ul>
-            </div>
-            <input type="text" id="bandwidthIpSearch" class="form-control form-control-sm" placeholder="Search IP address..." style="width: 200px;">
-            <select id="bandwidthSort" class="form-select form-select-sm" style="width: 180px;">
-                <option value="ip">Sort by IP</option>
-                <option value="upload">Most Upload</option>
-                <option value="download">Most Download</option>
-                <option value="total">Most Total</option>
-            </select>
-        </div>
-    </div>
-    <div class="card-body">
-        {% if bandwidth_stats and selected_period in bandwidth_stats %}
-            {% set period_data = bandwidth_stats[selected_period] %}
-            {% if period_data %}
-                <div class="table-responsive table-scroll">
-                    <table class="table table-striped table-sm" id="bandwidthTable">
-                        <thead>
-                            <tr>
-                                <th>IP Address</th>
-                                <th>Upload (Mbps)</th>
-                                <th>Download (Mbps)</th>
-                                <th>Total (Mbps)</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for ip_address, stats in period_data.items() %}
-                            <tr style="cursor: pointer;" onclick="showBandwidthChart('{{ ip_address }}')" title="Click to view bandwidth chart">
-                                <td><code>{{ ip_address }}</code></td>
-                                <td>
-                                    {% set tx_mbps = stats.tx_mb * 8 %}
-                                    {% if tx_mbps > 0 %}
-                                        <span class="badge bg-warning">{{ "%.2f"|format(tx_mbps) }} Mbps</span>
-                                    {% else %}
-                                        <span class="text-muted">0 Mbps</span>
-                                    {% endif %}
-                                </td>
-                                <td>
-                                    {% set rx_mbps = stats.rx_mb * 8 %}
-                                    {% if rx_mbps > 0 %}
-                                        <span class="badge bg-info">{{ "%.2f"|format(rx_mbps) }} Mbps</span>
-                                    {% else %}
-                                        <span class="text-muted">0 Mbps</span>
-                                    {% endif %}
-                                </td>
-                                <td>
-                                    {% set total_mbps = (stats.rx_mb + stats.tx_mb) * 8 %}
-                                    {% if total_mbps > 0 %}
-                                        <strong>{{ "%.2f"|format(total_mbps) }} Mbps</strong>
-                                    {% else %}
-                                        <span class="text-muted">0 Mbps</span>
-                                    {% endif %}
-                                </td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
-            {% else %}
-                <p class="text-muted">No bandwidth data available for the selected time period.</p>
-            {% endif %}
-            <div class="alert alert-info mt-3">
-                <small>
-                    <strong>Note:</strong> Per-IP bandwidth data is collected automatically every minute for internal IPs only.
-                    Shows data volume in megabits per second for internal IP addresses within your MikroTik network.
-                    Use the dropdown to change the time period view.
-                </small>
-            </div>
-        {% else %}
-            <p class="text-muted">No per-IP bandwidth data available yet. Data is collected automatically every minute.</p>
-        {% endif %}
-    </div>
-</div>
+<div class="modal fade" id="addAlertRuleModal"><div class="modal-dialog"><div class="modal-content"><div class="modal-header"><h5>Add Alert Rule</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+<form id="alertRuleForm"><div class="modal-body">
+<div class="mb-3"><label>Metric</label><select class="form-select" name="metric_type"><option value="cpu">CPU</option><option value="memory">Memory</option><option value="interface_down">Interface Down</option><option value="connections">Connections</option><option value="log_match">Log Match</option></select></div>
+<div class="mb-3"><label>Condition</label><select class="form-select" name="condition"><option value="gt">></option><option value="lt"><</option><option value="eq">=</option><option value="contains">Contains</option></select></div>
+<div class="mb-3"><label>Threshold</label><input type="text" class="form-control" name="threshold_value"></div>
+<div class="mb-3"><label>Duration (sec)</label><input type="number" class="form-control" name="duration_seconds" value="0"></div>
+<div class="mb-3"><label>Action</label><select class="form-select" name="action"><option value="email">Email</option><option value="webhook">Webhook</option><option value="syslog">Syslog</option></select></div>
+<div class="mb-3"><label>Config (JSON)</label><textarea class="form-control" name="action_config" rows="2">{}</textarea></div>
+</div><div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button><button type="submit" class="btn btn-primary">Add</button></div></form></div></div></div>
 
 <script>
-    // Internal IP Addresses filtering and sorting
-    document.addEventListener('DOMContentLoaded', function() {
-        console.log('DOM loaded, initializing filters...');
-        
-        // Internal IP Addresses functionality
-        const internalIpSearch = document.getElementById('internalIpSearch');
-        const internalIpSort = document.getElementById('internalIpSort');
-        const internalIpTable = document.getElementById('internalIpTable');
-        
-        console.log('Internal IP elements found:', {
-            search: !!internalIpSearch,
-            sort: !!internalIpSort,
-            table: !!internalIpTable
-        });
-        
-        if (internalIpTable && internalIpSearch && internalIpSort) {
-            console.log('Initializing Internal IP table functionality...');
-            
-            // Function to get current rows (always fresh from DOM)
-            function getInternalIpRows() {
-                return Array.from(internalIpTable.querySelectorAll('tbody tr'));
-            }
-            
-            // Search functionality
-            internalIpSearch.addEventListener('input', function() {
-                const searchTerm = this.value.toLowerCase().trim();
-                console.log('Internal IP search term:', searchTerm);
-                
-                // Add/remove highlight class
-                if (searchTerm) {
-                    this.classList.add('search-highlight');
-                } else {
-                    this.classList.remove('search-highlight');
-                }
-                
-                const rows = getInternalIpRows();
-                console.log('Searching through', rows.length, 'rows');
-                
-                let visibleCount = 0;
-                rows.forEach(row => {
-                    const cells = row.querySelectorAll('td');
-                    const ipText = cells[0].textContent.toLowerCase();
-                    const macText = cells[1].textContent.toLowerCase();
-                    const hostnameText = cells[2].textContent.toLowerCase();
-                    
-                    const matches = ipText.includes(searchTerm) || 
-                                   macText.includes(searchTerm) || 
-                                   hostnameText.includes(searchTerm);
-                    
-                    row.style.display = matches ? '' : 'none';
-                    if (matches) visibleCount++;
-                    console.log('Row:', ipText, 'matches:', matches);
-                });
-                
-                console.log('Search complete. Visible rows:', visibleCount);
-            });
-            
-            // Sort functionality
-            internalIpSort.addEventListener('change', function() {
-                const sortBy = this.value;
-                console.log('Internal IP sort changed to:', sortBy);
-                
-                const tbody = internalIpTable.querySelector('tbody');
-                const rows = getInternalIpRows();
-                
-                // Filter out hidden rows for sorting
-                const visibleRows = rows.filter(row => row.style.display !== 'none');
-                
-                visibleRows.sort((a, b) => {
-                    const aCells = a.querySelectorAll('td');
-                    const bCells = b.querySelectorAll('td');
-                    
-                    switch(sortBy) {
-                        case 'ip':
-                            return compareIPs(aCells[0].textContent, bCells[0].textContent);
-                        case 'hostname':
-                            const aHostname = aCells[2].textContent.toLowerCase();
-                            const bHostname = bCells[2].textContent.toLowerCase();
-                            return aHostname.localeCompare(bHostname);
-                        case 'status':
-                            const aStatus = aCells[3].textContent.toLowerCase();
-                            const bStatus = bCells[3].textContent.toLowerCase();
-                            return aStatus.localeCompare(bStatus);
-                        default:
-                            return 0;
-                    }
-                });
-                
-                // Clear and re-append sorted rows
-                tbody.innerHTML = '';
-                visibleRows.forEach(row => tbody.appendChild(row));
-                console.log('Internal IP table sorted by', sortBy);
-            });
-            
-            console.log('Internal IP table functionality initialized successfully');
-        } else {
-            console.error('Internal IP table elements not found properly');
+function loadAlertRules() {
+    axios.get(`/api/alert_rules/{{ router.id }}`).then(r => {
+        let c = document.getElementById('alertRulesContainer');
+        if (r.data.success && r.data.data.length) {
+            let h = '<table class="table table-sm table-striped"><thead><tr><th>Type</th><th>Condition</th><th>Threshold</th><th>Action</th><th>Status</th>{% if session.role == 'admin' %}<th></th>{% endif %}</tr></thead><tbody>';
+            r.data.data.forEach(rule => { h += `<tr><td><span class="badge bg-info">${rule.metric_type}</span></td><td>${rule.condition}</td><td>${rule.threshold_value}</td><td>${rule.action}</td><td>${rule.enabled ? '<span class="badge bg-success">Enabled</span>' : '<span class="badge bg-secondary">Disabled</span>'}</td>{% if session.role == 'admin' %}<td><button class="btn btn-sm btn-outline-danger" onclick="deleteRule(${rule.id})">Delete</button></td>{% endif %}</tr>`; });
+            h += '</tbody></table>'; c.innerHTML = h;
+        } else { c.innerHTML = '<p class="text-muted">No alert rules</p>'; }
+    }).catch(() => { document.getElementById('alertRulesContainer').innerHTML = '<p class="text-muted">Failed to load</p>'; });
+}
+loadAlertRules();
+document.getElementById('alertRuleForm').addEventListener('submit', function(e) {
+    e.preventDefault(); let fd = new FormData(this); let d = {};
+    fd.forEach((v,k)=>d[k]=v);
+    axios.post(`/api/alert_rules/{{ router.id }}`, d).then(r => { if(r.data.success) { bootstrap.Modal.getInstance(document.getElementById('addAlertRuleModal')).hide(); loadAlertRules(); } });
+});
+function acknowledgeAlert(id) { axios.post(`/api/alerts/acknowledge/${id}`).then(() => location.reload()); }
+function deleteRule(id) { if(confirm('Delete?')) axios.post(`/api/alert_rules/${id}/delete`).then(() => loadAlertRules()); }
+function showBandwidthChart(ip) {
+    axios.get(`/api/chart/bandwidth/{{ router.id }}?ip=${ip}&period={{ selected_period }}`).then(r => {
+        if(r.data.success && r.data.data && r.data.data.length) {
+            document.getElementById('bandwidthChartSection').style.display = 'block';
+            new Chart(document.getElementById('bandwidthChart').getContext('2d'), { type: 'line', data: {
+                labels: r.data.data.map(d=>d.timestamp),
+                datasets: [
+                    { label: 'Download Mbps', data: r.data.data.map(d=>d.download_mbps), borderColor: '#0d6efd', fill: false },
+                    { label: 'Upload Mbps', data: r.data.data.map(d=>d.upload_mbps), borderColor: '#ffc107', fill: false }
+                ]}, options: { responsive: true, maintainAspectRatio: false } });
         }
-        
-        // Bandwidth table filtering and sorting
-        const bandwidthIpSearch = document.getElementById('bandwidthIpSearch');
-        const bandwidthSort = document.getElementById('bandwidthSort');
-        const bandwidthTable = document.getElementById('bandwidthTable');
-        
-        console.log('Bandwidth elements found:', {
-            search: !!bandwidthIpSearch,
-            sort: !!bandwidthSort,
-            table: !!bandwidthTable
-        });
-        
-        if (bandwidthTable && bandwidthIpSearch && bandwidthSort) {
-            console.log('Initializing Bandwidth table functionality...');
-            
-            // Function to get current rows (always fresh from DOM)
-            function getBandwidthRows() {
-                return Array.from(bandwidthTable.querySelectorAll('tbody tr'));
-            }
-            
-            // Search functionality
-            bandwidthIpSearch.addEventListener('input', function() {
-                const searchTerm = this.value.toLowerCase().trim();
-                console.log('Bandwidth search term:', searchTerm);
-                
-                // Add/remove highlight class
-                if (searchTerm) {
-                    this.classList.add('search-highlight');
-                } else {
-                    this.classList.remove('search-highlight');
-                }
-                
-                const rows = getBandwidthRows();
-                console.log('Searching through', rows.length, 'bandwidth rows');
-                
-                let visibleCount = 0;
-                rows.forEach(row => {
-                    const ipCell = row.querySelector('td:first-child');
-                    const ipText = ipCell.textContent.toLowerCase();
-                    const matches = ipText.includes(searchTerm);
-                    
-                    row.style.display = matches ? '' : 'none';
-                    if (matches) visibleCount++;
-                    console.log('Bandwidth row:', ipText, 'matches:', matches);
-                });
-                
-                console.log('Bandwidth search complete. Visible rows:', visibleCount);
-            });
-            
-            // Sort functionality
-            bandwidthSort.addEventListener('change', function() {
-                const sortBy = this.value;
-                console.log('Bandwidth sort changed to:', sortBy);
-                
-                const tbody = bandwidthTable.querySelector('tbody');
-                const rows = getBandwidthRows();
-                
-                // Filter out hidden rows for sorting
-                const visibleRows = rows.filter(row => row.style.display !== 'none');
-                
-                visibleRows.sort((a, b) => {
-                    const aCells = a.querySelectorAll('td');
-                    const bCells = b.querySelectorAll('td');
-                    
-                    switch(sortBy) {
-                        case 'ip':
-                            return compareIPs(aCells[0].textContent, bCells[0].textContent);
-                        case 'upload':
-                            const aUpload = extractNumber(aCells[1].textContent);
-                            const bUpload = extractNumber(bCells[1].textContent);
-                            return bUpload - aUpload; // Descending
-                        case 'download':
-                            const aDownload = extractNumber(aCells[2].textContent);
-                            const bDownload = extractNumber(bCells[2].textContent);
-                            return bDownload - aDownload; // Descending
-                        case 'total':
-                            const aTotal = extractNumber(aCells[3].textContent);
-                            const bTotal = extractNumber(bCells[3].textContent);
-                            return bTotal - aTotal; // Descending
-                        default:
-                            return 0;
-                    }
-                });
-                
-                // Clear and re-append sorted rows
-                tbody.innerHTML = '';
-                visibleRows.forEach(row => tbody.appendChild(row));
-                console.log('Bandwidth table sorted by', sortBy);
-            });
-            
-            console.log('Bandwidth table functionality initialized successfully');
-        } else {
-            console.error('Bandwidth table elements not found properly');
-        }
-        
-        // Helper function to extract number from text (handles badges and formatting)
-        function extractNumber(text) {
-            // Extract first number from text (handles "1.23 MB" or badges)
-            const match = text.match(/[\d.]+/);
-            return match ? parseFloat(match[0]) : 0;
-        }
-        
-        // Helper function to compare IP addresses
-        function compareIPs(ipA, ipB) {
-            // Remove <code> tags if present
-            const cleanIpA = ipA.replace(/<[^>]*>/g, '').trim();
-            const cleanIpB = ipB.replace(/<[^>]*>/g, '').trim();
-            
-            const aParts = cleanIpA.split('.').map(part => parseInt(part) || 0);
-            const bParts = cleanIpB.split('.').map(part => parseInt(part) || 0);
-            
-            for (let i = 0; i < 4; i++) {
-                if (aParts[i] !== bParts[i]) {
-                    return aParts[i] - bParts[i];
-                }
-            }
-            return 0;
-        }
-        
-        console.log('All filter functionality initialized successfully!');
-        
-        // Simple auto-refresh functionality
-        let refreshInterval = null;
-        let refreshCount = 0;
-        const REFRESH_INTERVAL = 60000; // 60 seconds
-        
-        function startAutoRefresh() {
-            console.log('Starting auto-refresh every', REFRESH_INTERVAL / 1000, 'seconds');
-            
-            refreshInterval = setInterval(() => {
-                refreshData();
-            }, REFRESH_INTERVAL);
-            
-            // Show refresh indicator
-            updateRefreshIndicator();
-        }
-        
-        function stopAutoRefresh() {
-            if (refreshInterval) {
-                clearInterval(refreshInterval);
-                refreshInterval = null;
-                console.log('Auto-refresh stopped');
-            }
-        }
-        
-        function refreshData() {
-            console.log('Auto-refreshing page...');
-            refreshCount++;
-            
-            // Show loading indicator
-            showLoadingState(true);
-            
-            // Reload the page after a short delay to show loading state
-            setTimeout(() => {
-                // Get current URL and preserve time period
-                const currentUrl = window.location.href;
-                window.location.href = currentUrl;
-            }, 500);
-        }
-        
-        function showLoadingState(show) {
-            // Create or update loading overlay
-            let overlay = document.getElementById('refresh-overlay');
-            
-            if (show) {
-                if (!overlay) {
-                    overlay = document.createElement('div');
-                    overlay.id = 'refresh-overlay';
-                    overlay.className = 'position-fixed top-0 start-0 w-100 h-100 d-flex align-items-center justify-content-center';
-                    overlay.style.backgroundColor = 'rgba(255, 255, 255, 0.8)';
-                    overlay.style.zIndex = '9999';
-                    overlay.innerHTML = `
-                        <div class="text-center">
-                            <div class="spinner-border text-primary" role="status">
-                                <span class="visually-hidden">Refreshing...</span>
-                            </div>
-                            <div class="mt-2 text-muted">Refreshing data...</div>
-                        </div>
-                    `;
-                    document.body.appendChild(overlay);
-                }
-            } else {
-                if (overlay) {
-                    overlay.remove();
-                }
-            }
-        }
-        
-        function updateRefreshIndicator() {
-            // Create or update refresh indicator
-            let indicator = document.getElementById('refresh-indicator');
-            if (!indicator) {
-                indicator = document.createElement('div');
-                indicator.id = 'refresh-indicator';
-                indicator.className = 'position-fixed bottom-0 end-0 m-3 p-2 bg-dark text-white rounded small';
-                indicator.style.zIndex = '1050';
-                document.body.appendChild(indicator);
-            }
-            
-            const now = new Date().toLocaleTimeString();
-            indicator.innerHTML = `Auto-refresh: ${refreshCount} updates | Last: ${now}`;
-        }
-        
-        // Start auto-refresh when page loads
-        startAutoRefresh();
-        
-        // Stop auto-refresh when page is hidden (to save resources)
-        document.addEventListener('visibilitychange', function() {
-            if (document.hidden) {
-                stopAutoRefresh();
-            } else {
-                startAutoRefresh();
-            }
-        });
-        
-        // Clean up on page unload
-        window.addEventListener('beforeunload', stopAutoRefresh);
-        
-        // Initialize bandwidth chart functionality
-        initializeBandwidthChart();
-        
-        // Initialize interface bandwidth chart functionality
-        initializeInterfaceBandwidthChart();
     });
-    
-    // Helper function to get time period label (shared between charts)
-    function getTimePeriodLabel(period) {
-        const labels = {
-            '1h': 'Last 1 hour',
-            '3h': 'Last 3 hours',
-            '6h': 'Last 6 hours',
-            '12h': 'Last 12 hours',
-            '24h': 'Last 24 hours',
-            '3d': 'Last 3 days',
-            '1w': 'Last 1 week'
-        };
-        return labels[period] || period;
-    }
-    
-    // Bandwidth Chart Functionality
-    function initializeBandwidthChart() {
-        let bandwidthChart = null;
-        const chartSection = document.getElementById('bandwidthChartSection');
-        const chartCanvas = document.getElementById('bandwidthChart');
-        const chartTimePeriod = document.getElementById('chartTimePeriod');
-        const closeChartBtn = document.getElementById('closeChart');
-        const chartIpAddress = document.getElementById('chartIpAddress');
-        const chartInfo = document.getElementById('chartInfo');
-        
-        // Close chart button
-        closeChartBtn.addEventListener('click', function() {
-            chartSection.style.display = 'none';
-            if (bandwidthChart) {
-                bandwidthChart.destroy();
-                bandwidthChart = null;
-            }
-        });
-        
-        // Time period change
-        chartTimePeriod.addEventListener('change', function() {
-            if (chartSection.style.display !== 'none' && bandwidthChart) {
-                const currentIp = chartIpAddress.textContent;
-                loadChartData(currentIp, this.value);
-            }
-        });
-        
-        // Function to show chart for an IP
-        window.showBandwidthChart = function(ipAddress) {
-            chartSection.style.display = 'block';
-            chartIpAddress.textContent = ipAddress;
-            loadChartData(ipAddress, chartTimePeriod.value);
-            
-            // Scroll to chart
-            chartSection.scrollIntoView({ behavior: 'smooth' });
-        };
-        
-        // Function to load chart data
-        function loadChartData(ipAddress, timePeriod) {
-            const routerId = {{ router.id }};
-            
-            // Show loading state
-            chartInfo.innerHTML = `<div class="spinner-border spinner-border-sm" role="status"></div> Loading chart data for ${ipAddress}...`;
-            
-            axios.get(`/api/chart/bandwidth/${routerId}?ip=${encodeURIComponent(ipAddress)}&period=${timePeriod}`)
-                .then(response => {
-                    if (response.data.success) {
-                        if (response.data.data && response.data.data.length > 0) {
-                            updateChart(response.data.data, ipAddress, timePeriod);
-                            chartInfo.innerHTML = `Showing bandwidth usage for: <strong>${ipAddress}</strong> (${getTimePeriodLabel(timePeriod)})`;
-                        } else {
-                            // No data available
-                            if (bandwidthChart) {
-                                bandwidthChart.destroy();
-                                bandwidthChart = null;
-                            }
-                            chartInfo.innerHTML = `<span class="text-warning">${response.data.message || 'No bandwidth data available for the selected time period'}</span>`;
-                        }
-                    } else {
-                        throw new Error(response.data.error || 'Failed to load chart data');
-                    }
-                })
-                .catch(error => {
-                    console.error('Error loading chart data:', error);
-                    chartInfo.innerHTML = `<span class="text-danger">Error loading chart data: ${error.message}</span>`;
-                });
-        }
-        
-        // Function to update the chart
-        function updateChart(data, ipAddress, timePeriod) {
-            const ctx = chartCanvas.getContext('2d');
-            
-            // Destroy existing chart
-            if (bandwidthChart) {
-                bandwidthChart.destroy();
-            }
-            
-            // Prepare data
-            const labels = data.map(item => {
-                const date = new Date(item.timestamp);
-                return date.toLocaleTimeString();
-            });
-            
-            const downloadData = data.map(item => item.download_mbps);
-            const uploadData = data.map(item => item.upload_mbps);
-            
-            // Create chart
-            bandwidthChart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: labels,
-                    datasets: [
-                        {
-                            label: 'Download (Mbps)',
-                            data: downloadData,
-                            borderColor: 'rgb(54, 162, 235)',
-                            backgroundColor: 'rgba(54, 162, 235, 0.1)',
-                            tension: 0.4,
-                            fill: true
-                        },
-                        {
-                            label: 'Upload (Mbps)',
-                            data: uploadData,
-                            borderColor: 'rgb(255, 99, 132)',
-                            backgroundColor: 'rgba(255, 99, 132, 0.1)',
-                            tension: 0.4,
-                            fill: true
-                        }
-                    ]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        title: {
-                            display: true,
-                            text: `Bandwidth Usage - ${ipAddress}`,
-                            font: {
-                                size: 16
-                            }
-                        },
-                        tooltip: {
-                            mode: 'index',
-                            intersect: false
-                        }
-                    },
-                    scales: {
-                        x: {
-                            display: true,
-                            title: {
-                                display: true,
-                                text: 'Time'
-                            }
-                        },
-                        y: {
-                            display: true,
-                            title: {
-                                display: true,
-                                text: 'Bandwidth (Mbps)'
-                            },
-                            beginAtZero: true
-                        }
-                    },
-                    interaction: {
-                        intersect: false,
-                        mode: 'nearest'
-                    }
-                }
-            });
-        }
-    }
-
-    // Interface Bandwidth Chart Functionality
-    function initializeInterfaceBandwidthChart() {
-        let interfaceBandwidthChart = null;
-        const chartSection = document.getElementById('interfaceBandwidthChartSection');
-        const chartCanvas = document.getElementById('interfaceBandwidthChart');
-        const chartTimePeriod = document.getElementById('interfaceChartTimePeriod');
-        const closeChartBtn = document.getElementById('closeInterfaceChart');
-        const chartInterfaceName = document.getElementById('chartInterfaceName');
-        const chartInfo = document.getElementById('interfaceChartInfo');
-        
-        // Close chart button
-        closeChartBtn.addEventListener('click', function() {
-            chartSection.style.display = 'none';
-            if (interfaceBandwidthChart) {
-                interfaceBandwidthChart.destroy();
-                interfaceBandwidthChart = null;
-            }
-        });
-        
-        // Time period change
-        chartTimePeriod.addEventListener('change', function() {
-            if (chartSection.style.display !== 'none' && interfaceBandwidthChart) {
-                const currentInterface = chartInterfaceName.textContent;
-                loadInterfaceChartData(currentInterface, this.value);
-            }
-        });
-        
-        // Function to show chart for an interface
-        window.showInterfaceBandwidthChart = function(interfaceName) {
-            chartSection.style.display = 'block';
-            chartInterfaceName.textContent = interfaceName;
-            loadInterfaceChartData(interfaceName, chartTimePeriod.value);
-            
-            // Scroll to chart
-            chartSection.scrollIntoView({ behavior: 'smooth' });
-        };
-        
-        // Function to load chart data
-        function loadInterfaceChartData(interfaceName, timePeriod) {
-            const routerId = {{ router.id }};
-            
-            // Show loading state
-            chartInfo.innerHTML = `<div class="spinner-border spinner-border-sm" role="status"></div> Loading chart data for ${interfaceName}...`;
-            
-            axios.get(`/api/chart/interface_bandwidth/${routerId}?interface=${encodeURIComponent(interfaceName)}&period=${timePeriod}`)
-                .then(response => {
-                    if (response.data.success) {
-                        if (response.data.data && response.data.data.length > 0) {
-                            updateInterfaceChart(response.data.data, interfaceName, timePeriod);
-                            chartInfo.innerHTML = `Showing bandwidth usage for: <strong>${interfaceName}</strong> (${getTimePeriodLabel(timePeriod)})`;
-                        } else {
-                            // No data available
-                            if (interfaceBandwidthChart) {
-                                interfaceBandwidthChart.destroy();
-                                interfaceBandwidthChart = null;
-                            }
-                            chartInfo.innerHTML = `<span class="text-warning">${response.data.message || 'No bandwidth data available for this interface'}</span>`;
-                        }
-                    } else {
-                        throw new Error(response.data.error || 'Failed to load chart data');
-                    }
-                })
-                .catch(error => {
-                    console.error('Error loading interface chart data:', error);
-                    chartInfo.innerHTML = `<span class="text-danger">Error loading chart data: ${error.message}</span>`;
-                });
-        }
-        
-        // Function to update the chart
-        function updateInterfaceChart(data, interfaceName, timePeriod) {
-            const ctx = chartCanvas.getContext('2d');
-            
-            // Destroy existing chart
-            if (interfaceBandwidthChart) {
-                interfaceBandwidthChart.destroy();
-            }
-            
-            // Prepare data
-            const labels = data.map(item => {
-                const date = new Date(item.timestamp);
-                return date.toLocaleTimeString();
-            });
-            
-            const downloadData = data.map(item => item.download_mbps);
-            const uploadData = data.map(item => item.upload_mbps);
-            
-            // Create chart
-            interfaceBandwidthChart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: labels,
-                    datasets: [
-                        {
-                            label: 'Download (Mbps)',
-                            data: downloadData,
-                            borderColor: 'rgb(54, 162, 235)',
-                            backgroundColor: 'rgba(54, 162, 235, 0.1)',
-                            tension: 0.4,
-                            fill: true
-                        },
-                        {
-                            label: 'Upload (Mbps)',
-                            data: uploadData,
-                            borderColor: 'rgb(255, 99, 132)',
-                            backgroundColor: 'rgba(255, 99, 132, 0.1)',
-                            tension: 0.4,
-                            fill: true
-                        }
-                    ]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        title: {
-                            display: true,
-                            text: `Interface Bandwidth - ${interfaceName}`,
-                            font: {
-                                size: 16
-                            }
-                        },
-                        tooltip: {
-                            mode: 'index',
-                            intersect: false
-                        }
-                    },
-                    scales: {
-                        x: {
-                            display: true,
-                            title: {
-                                display: true,
-                                text: 'Time'
-                            }
-                        },
-                        y: {
-                            display: true,
-                            title: {
-                                display: true,
-                                text: 'Bandwidth (Mbps)'
-                            },
-                            beginAtZero: true
-                        }
-                    },
-                    interaction: {
-                        intersect: false,
-                        mode: 'nearest'
-                    }
-                }
-            });
-        }
-    }
+}
 </script>
 {% endblock %}
-</script>
