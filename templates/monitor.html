@@ -1,195 +1,497 @@
 {% extends "base.html" %}
+{% from "_macros.html" import status_badge, empty_state, stat_card %}
+
+{% block title %}{{ router.name }} &middot; Monitor{% endblock %}
+
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-4">
+<div class="page-header">
     <div>
-        <h1>Router Monitoring: {{ router.name }}</h1>
-        <small class="text-muted">
-            {% if source_type == 'SNMP' %}SNMP data{% else %}API data{% endif %}
-            &mdash; Connected via <strong>{{ source_label }}</strong> on port {{ source_port }}
-        </small>
-        <span class="badge bg-{{ 'success' if source_type == 'API' else 'warning' }} ms-2">{{ source_label }}</span>
-        {% if router.snmp_enabled and source_type == 'API' %}<span class="badge bg-success ms-2">SNMP Available</span>{% endif %}
+        <h1 class="page-title d-flex align-items-center gap-2">
+            {{ router.name }}
+            {% if source_type == 'API' %}
+                {{ status_badge('online', 'Connected') }}
+            {% else %}
+                <span class="badge-soft amber">{{ source_label }}</span>
+            {% endif %}
+        </h1>
+        <p class="page-subtitle">
+            <span class="text-mono">{{ router.host }}:{{ source_port }}</span>
+            &middot; via <strong>{{ source_label }}</strong>
+            {% if source_type == 'API' and router.snmp_enabled %}<span class="badge-soft cyan ms-1">SNMP available</span>{% endif %}
+        </p>
     </div>
-    <div>
-        <a href="{{ url_for('index') }}" class="btn btn-secondary">Dashboard</a>
-        <a href="{{ url_for('refresh_router', router_id=router.id) }}" class="btn btn-outline-primary">Refresh</a>
+    <div class="page-actions">
+        <a href="{{ url_for('index') }}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-1"></i>Dashboard</a>
+        <form method="POST" action="{{ url_for('refresh_router', router_id=router.id) }}" class="d-inline m-0">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-outline-secondary"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
+        </form>
         {% if session.role in ('admin','operator') and source_type != 'SNMP' %}
-            <a href="{{ url_for('trigger_backup', router_id=router.id) }}" class="btn btn-outline-warning" onclick="return confirm('Run backup now?')">Backup Now</a>
-            <a href="{{ url_for('edit_router', router_id=router.id) }}" class="btn btn-outline-info">Edit</a>
+            <form method="POST" action="{{ url_for('trigger_backup', router_id=router.id) }}" class="d-inline m-0" onsubmit="return confirm('Run backup now?')">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-outline-warning"><i class="bi bi-download me-1"></i>Backup</button>
+            </form>
+            <a href="{{ url_for('edit_router', router_id=router.id) }}" class="btn btn-outline-secondary"><i class="bi bi-pencil me-1"></i>Edit</a>
         {% endif %}
     </div>
 </div>
 
 {% if info.api_errors %}
-<div class="alert alert-danger">
-    <strong>API Errors detected — some data may be missing:</strong>
-    <ul class="mb-0 mt-1">{% for err in info.api_errors %}<li><small>{{ err }}</small></li>{% endfor %}</ul>
-    <small class="text-muted">Check router user permissions. The API user needs read access to all resources.</small>
+<div class="alert alert-warning">
+    <strong><i class="bi bi-exclamation-triangle me-1"></i>API errors detected &mdash; some data may be missing:</strong>
+    <ul class="mb-0 mt-1 small">{% for err in info.api_errors %}<li>{{ err }}</li>{% endfor %}</ul>
 </div>
 {% endif %}
 
-<!-- Debug info: raw resource keys -->
-{% if info.resources and info.resources.keys() %}
-<div class="small text-muted mb-2">Resource fields: {{ info.resources.keys()|list }}</div>
-{% endif %}
-
-<ul class="nav nav-tabs mb-4" id="monitorTabs" role="tablist">
-    <li class="nav-item"><button class="nav-link active" id="system-tab" data-bs-toggle="tab" data-bs-target="#system">System</button></li>
-    <li class="nav-item"><button class="nav-link" id="addresses-tab" data-bs-toggle="tab" data-bs-target="#addresses">Addresses & Interfaces</button></li>
-    <li class="nav-item"><button class="nav-link" id="bandwidth-tab" data-bs-toggle="tab" data-bs-target="#bandwidth">Bandwidth</button></li>
-    <li class="nav-item"><button class="nav-link" id="alerts-tab" data-bs-toggle="tab" data-bs-target="#alerts">Alerts <span class="badge bg-danger" id="alertCount">{{ alerts|selectattr('status','equalto','active')|list|length }}</span></button></li>
-    <li class="nav-item"><button class="nav-link" id="backups-tab" data-bs-toggle="tab" data-bs-target="#backups">Backups</button></li>
-    <li class="nav-item"><button class="nav-link" id="logs-tab" data-bs-toggle="tab" data-bs-target="#logs">Logs</button></li>
+<ul class="nav nav-tabs" id="monitorTabs" role="tablist">
+    <li class="nav-item"><button class="nav-link {{ 'active' if selected_tab == 'system' }}" id="system-tab" data-bs-toggle="tab" data-bs-target="#system" type="button"><i class="bi bi-cpu me-1"></i>System</button></li>
+    <li class="nav-item"><button class="nav-link {{ 'active' if selected_tab == 'addresses' }}" id="addresses-tab" data-bs-toggle="tab" data-bs-target="#addresses" type="button"><i class="bi bi-diagram-3 me-1"></i>Addresses & Interfaces</button></li>
+    <li class="nav-item"><button class="nav-link {{ 'active' if selected_tab == 'bandwidth' }}" id="bandwidth-tab" data-bs-toggle="tab" data-bs-target="#bandwidth" type="button"><i class="bi bi-bar-chart-line me-1"></i>Bandwidth</button></li>
+    <li class="nav-item"><button class="nav-link {{ 'active' if selected_tab == 'alerts' }}" id="alerts-tab" data-bs-toggle="tab" data-bs-target="#alerts" type="button"><i class="bi bi-bell me-1"></i>Alerts <span class="badge bg-danger" id="alertCount">{{ alerts|selectattr('status','equalto','active')|list|length }}</span></button></li>
+    <li class="nav-item"><button class="nav-link {{ 'active' if selected_tab == 'backups' }}" id="backups-tab" data-bs-toggle="tab" data-bs-target="#backups" type="button"><i class="bi bi-archive me-1"></i>Backups</button></li>
+    <li class="nav-item"><button class="nav-link {{ 'active' if selected_tab == 'logs' }}" id="logs-tab" data-bs-toggle="tab" data-bs-target="#logs" type="button"><i class="bi bi-journal-text me-1"></i>Logs</button></li>
 </ul>
 
 <div class="tab-content">
-    <div class="tab-pane fade show active" id="system">
-        <div class="row">
+    <!-- System -->
+    <div class="tab-pane fade {{ 'show active' if selected_tab == 'system' }}" id="system">
+        <div class="row g-3">
             <div class="col-md-6">
-                <div class="card mb-4">
-                    <div class="card-header"><h5>System Identity</h5></div>
+                <div class="app-card h-100">
+                    <div class="card-header"><h5><i class="bi bi-info-circle me-1"></i>System Identity</h5></div>
                     <div class="card-body">
-                        <table class="table table-sm">
-                            <tr><th>Router Name:</th><td>{{ info.identity.name if info.identity and info.identity.name else 'No data' }}</td></tr>
-                            <tr><th>Firmware:</th><td>{{ info.resources.version if info.resources and info.resources.version and info.resources.version != 'N/A' else 'No data' }}</td></tr>
-                            <tr><th>Architecture:</th><td>{{ info.resources.architecture_name if info.resources and info.resources.architecture_name and info.resources.architecture_name != 'N/A' else 'No data' }}</td></tr>
-                            <tr><th>Board Name:</th><td>{{ info.resources.board_name if info.resources and info.resources.board_name and info.resources.board_name != 'N/A' else 'No data' }}</td></tr>
-                            <tr><th>Platform:</th><td>{{ info.resources.platform if info.resources and info.resources.platform else 'No data' }}</td></tr>
-                        </table>
-                    </div>
-                </div>
-                <div class="card mb-4">
-                    <div class="card-header"><h5>System Resources</h5></div>
-                    <div class="card-body">
-                        <table class="table table-sm">
-                            <tr><th>Uptime:</th><td>{{ info.resources.uptime if info.resources and info.resources.uptime else 'No data' }}</td></tr>
-                            <tr><th>CPU Load:</th><td>{% if info.resources and info.resources.cpu_load and info.resources.cpu_load != 'N/A' %}<span class="badge bg-{{ 'success' if info.resources.cpu_load|float < 50 else 'warning' if info.resources.cpu_load|float < 80 else 'danger' }}">{{ info.resources.cpu_load }}%</span>{% else %}<span class="text-muted">No data</span>{% endif %}</td></tr>
-                            <tr><th>CPU Cores:</th><td>{{ info.resources.cpu_count if info.resources and info.resources.cpu_count and info.resources.cpu_count != 'N/A' else 'No data' }}</td></tr>
-                            <tr><th>Memory:</th><td>{% if info.resources and info.resources.total_memory and info.resources.total_memory != 'N/A' and info.resources.used_memory and info.resources.used_memory != 'N/A' %}{% set tm = info.resources.total_memory|int / 1048576 %}{% set um = info.resources.used_memory|int / 1048576 %}{% set pct = (um / tm * 100)|round(1) %}<div class="progress" style="height:20px"><div class="progress-bar bg-{{ 'success' if pct < 70 else 'warning' if pct < 85 else 'danger' }}" style="width:{{ pct }}%">{{ pct }}%</div></div><small class="text-muted">{{ um|round(1) }}MB / {{ tm|round(1) }}MB</small>{% else %}<span class="text-muted">No data</span>{% endif %}</td></tr>
+                        <table class="table-app">
+                            <tbody>
+                                <tr><th style="width: 40%">Router Name</th><td>{{ info.identity.name if info.identity and info.identity.name else 'No data' }}</td></tr>
+                                <tr><th>Firmware</th><td>{{ info.resources.version if info.resources and info.resources.version and info.resources.version != 'N/A' else 'No data' }}</td></tr>
+                                <tr><th>Architecture</th><td>{{ info.resources.architecture_name if info.resources and info.resources.architecture_name and info.resources.architecture_name != 'N/A' else 'No data' }}</td></tr>
+                                <tr><th>Board</th><td>{{ info.resources.board_name if info.resources and info.resources.board_name and info.resources.board_name != 'N/A' else 'No data' }}</td></tr>
+                                <tr><th>Platform</th><td>{{ info.resources.platform if info.resources and info.resources.platform else 'No data' }}</td></tr>
+                            </tbody>
                         </table>
                     </div>
                 </div>
             </div>
             <div class="col-md-6">
-                {% if info.clock %}
-                <div class="card mb-4">
-                    <div class="card-header"><h5>System Clock</h5></div>
-                    <div class="card-body"><table class="table table-sm">
-                        <tr><th>Date:</th><td>{{ info.clock.date if info.clock.date else 'No data' }}</td></tr>
-                        <tr><th>Time:</th><td>{{ info.clock.time if info.clock.time else 'No data' }}</td></tr>
-                        <tr><th>Timezone:</th><td>{{ info.clock.time_zone_name if info.clock.time_zone_name else 'No data' }}</td></tr>
-                    </table></div>
+                <div class="app-card h-100">
+                    <div class="card-header"><h5><i class="bi bi-speedometer2 me-1"></i>System Resources</h5></div>
+                    <div class="card-body">
+                        <table class="table-app">
+                            <tbody>
+                                <tr><th style="width: 40%">Uptime</th><td>{{ info.resources.uptime if info.resources and info.resources.uptime else 'No data' }}</td></tr>
+                                <tr>
+                                    <th>CPU Load</th>
+                                    <td>
+                                        {% if info.resources and info.resources.cpu_load and info.resources.cpu_load != 'N/A' %}
+                                            <span class="badge-soft {{ 'green' if info.resources.cpu_load|float < 50 else 'amber' if info.resources.cpu_load|float < 80 else 'red' }}">{{ info.resources.cpu_load }}%</span>
+                                        {% else %}<span class="text-muted">No data</span>{% endif %}
+                                    </td>
+                                </tr>
+                                <tr><th>CPU Cores</th><td>{{ info.resources.cpu_count if info.resources and info.resources.cpu_count and info.resources.cpu_count != 'N/A' else 'No data' }}</td></tr>
+                                <tr>
+                                    <th>Memory</th>
+                                    <td>
+                                        {% if info.resources and info.resources.total_memory and info.resources.total_memory != 'N/A' and info.resources.used_memory and info.resources.used_memory != 'N/A' %}
+                                            {% set tm = info.resources.total_memory|int / 1048576 %}
+                                            {% set um = info.resources.used_memory|int / 1048576 %}
+                                            {% set pct = (um / tm * 100)|round(1) %}
+                                            <div class="progress mb-1"><div class="progress-bar bg-{{ 'success' if pct < 70 else 'warning' if pct < 85 else 'danger' }}" style="width: {{ pct }}%">{{ pct }}%</div></div>
+                                            <small class="text-muted">{{ um|round(1) }} MB / {{ tm|round(1) }} MB</small>
+                                        {% else %}<span class="text-muted">No data</span>{% endif %}
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                {% if info.clock and (info.clock.date or info.clock.time) %}
+                <div class="app-card h-100">
+                    <div class="card-header"><h5><i class="bi bi-clock me-1"></i>System Clock</h5></div>
+                    <div class="card-body">
+                        <table class="table-app">
+                            <tbody>
+                                <tr><th style="width: 40%">Date</th><td>{{ info.clock.date if info.clock.date else 'No data' }}</td></tr>
+                                <tr><th>Time</th><td>{{ info.clock.time if info.clock.time else 'No data' }}</td></tr>
+                                <tr><th>Timezone</th><td>{{ info.clock.time_zone_name if info.clock.time_zone_name else 'No data' }}</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
                 {% endif %}
-                {% if info.health %}
-                <div class="card mb-4">
-                    <div class="card-header"><h5>Health</h5></div>
-                    <div class="card-body">{% if info.health.temperature or info.health.cpu_temperature %}<table class="table table-sm">{% if info.health.temperature %}<tr><th>Temperature:</th><td><span class="badge bg-{{ 'success' if info.health.temperature|float < 60 else 'warning' if info.health.temperature|float < 70 else 'danger' }}">{{ info.health.temperature }}°C</span></td></tr>{% endif %}{% if info.health.cpu_temperature %}<tr><th>CPU Temp:</th><td><span class="badge bg-{{ 'success' if info.health.cpu_temperature|float < 60 else 'warning' if info.health.cpu_temperature|float < 70 else 'danger' }}">{{ info.health.cpu_temperature }}°C</span></td></tr>{% endif %}</table>{% else %}<span class="text-muted">No health data</span>{% endif %}</div>
+            </div>
+            <div class="col-md-6">
+                {% if info.health and (info.health.temperature or info.health.cpu_temperature) %}
+                <div class="app-card h-100">
+                    <div class="card-header"><h5><i class="bi bi-thermometer-half me-1"></i>Health</h5></div>
+                    <div class="card-body">
+                        {% if info.health.temperature %}
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <span class="metric-label">Temperature</span>
+                                <span class="badge-soft {{ 'green' if info.health.temperature|float < 60 else 'amber' if info.health.temperature|float < 70 else 'red' }}">{{ info.health.temperature }}&deg;C</span>
+                            </div>
+                        {% endif %}
+                        {% if info.health.cpu_temperature %}
+                            <div class="d-flex justify-content-between align-items-center">
+                                <span class="metric-label">CPU Temperature</span>
+                                <span class="badge-soft {{ 'green' if info.health.cpu_temperature|float < 60 else 'amber' if info.health.cpu_temperature|float < 70 else 'red' }}">{{ info.health.cpu_temperature }}&deg;C</span>
+                            </div>
+                        {% endif %}
+                    </div>
                 </div>
                 {% endif %}
             </div>
         </div>
     </div>
 
-    <div class="tab-pane fade" id="addresses">
-        <div class="row">
+    <!-- Addresses & Interfaces -->
+    <div class="tab-pane fade {{ 'show active' if selected_tab == 'addresses' }}" id="addresses">
+        <div class="row g-3">
             <div class="col-md-6">
-                <div class="card mb-4">
-                    <div class="card-header"><h5>IP Addresses ({{ info.ip_addresses|length }})</h5></div>
-                    <div class="card-body">{% if info.ip_addresses %}<div class="table-responsive table-scroll"><table class="table table-striped table-sm"><thead><tr><th>Address</th><th>Interface</th></tr></thead><tbody>{% for ip in info.ip_addresses %}<tr><td><code>{{ ip.address }}</code></td><td>{{ ip.interface }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="text-muted">No IP addresses found</p>{% endif %}</div>
+                <div class="app-card h-100">
+                    <div class="card-header"><h5><i class="bi bi-ethernet me-1"></i>IP Addresses ({{ info.ip_addresses|length }})</h5></div>
+                    <div class="card-body p-0">
+                        {% if info.ip_addresses %}
+                            <div class="table-scroll">
+                                <table class="table-app"><thead><tr><th>Address</th><th>Interface</th></tr></thead>
+                                <tbody>{% for ip in info.ip_addresses %}<tr><td><code>{{ ip.address }}</code></td><td>{{ ip.interface }}</td></tr>{% endfor %}</tbody></table>
+                            </div>
+                        {% else %}
+                            {{ empty_state('ethernet', 'No IP addresses', 'No configured IP addresses found on this router.') }}
+                        {% endif %}
+                    </div>
                 </div>
             </div>
             <div class="col-md-6">
-                <div class="card mb-4">
-                    <div class="card-header"><h5>Interfaces ({{ info.interfaces|length }})</h5></div>
-                    <div class="card-body">{% if info.interfaces %}<div class="table-responsive table-scroll"><table class="table table-striped table-sm"><thead><tr><th>Name</th><th>Type</th><th>Status</th></tr></thead><tbody>{% for iface in info.interfaces %}<tr><td><strong>{{ iface.name }}</strong></td><td><span class="badge bg-secondary">{{ iface.type }}</span></td><td>{% if iface.running == 'true' %}<span class="badge bg-success">Up</span>{% else %}<span class="badge bg-danger">Down</span>{% endif %}</td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="text-muted">No interfaces found</p>{% endif %}</div>
+                <div class="app-card h-100">
+                    <div class="card-header"><h5><i class="bi bi-diagram-3 me-1"></i>Interfaces ({{ info.interfaces|length }})</h5></div>
+                    <div class="card-body p-0">
+                        {% if info.interfaces %}
+                            <div class="table-scroll">
+                                <table class="table-app"><thead><tr><th>Name</th><th>Type</th><th>Status</th></tr></thead>
+                                <tbody>{% for iface in info.interfaces %}<tr><td><strong>{{ iface.name }}</strong></td><td><span class="badge-soft gray">{{ iface.type }}</span></td><td>{{ status_badge('online' if iface.running == 'true' else 'offline', 'Up' if iface.running == 'true' else 'Down') }}</td></tr>{% endfor %}</tbody></table>
+                            </div>
+                        {% else %}
+                            {{ empty_state('diagram-3', 'No interfaces', 'No interfaces found on this router.') }}
+                        {% endif %}
+                    </div>
                 </div>
             </div>
-        </div>
-        <div class="card mb-4">
-            <div class="card-header"><h5>DHCP Leases ({{ info.dhcp_leases|length }})</h5></div>
-            <div class="card-body">{% if info.dhcp_leases %}<div class="table-responsive table-scroll"><table class="table table-striped table-sm"><thead><tr><th>IP</th><th>MAC</th><th>Hostname</th><th>Status</th></tr></thead><tbody>{% for lease in info.dhcp_leases %}<tr><td><code>{{ lease.address }}</code></td><td><code>{{ lease['mac-address'] }}</code></td><td>{{ lease['host-name'] if lease['host-name'] else 'N/A' }}</td><td><span class="badge bg-{{ 'success' if lease.status == 'bound' else 'warning' }}">{{ lease.status }}</span></td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="text-muted">No DHCP leases found</p>{% endif %}</div>
+            <div class="col-12">
+                <div class="app-card">
+                    <div class="card-header"><h5><i class="bi bi-people me-1"></i>DHCP Leases ({{ info.dhcp_leases|length }})</h5></div>
+                    <div class="card-body p-0">
+                        {% if info.dhcp_leases %}
+                            <div class="table-scroll">
+                                <table class="table-app"><thead><tr><th>IP</th><th>MAC</th><th>Hostname</th><th>Status</th></tr></thead>
+                                <tbody>{% for lease in info.dhcp_leases %}<tr><td><code>{{ lease.address }}</code></td><td><code class="text-muted">{{ lease['mac-address'] }}</code></td><td>{{ lease['host-name'] if lease['host-name'] else 'N/A' }}</td><td>{{ status_badge('online' if lease.status == 'bound' else 'warning', lease.status) }}</td></tr>{% endfor %}</tbody></table>
+                            </div>
+                        {% else %}
+                            {{ empty_state('people', 'No DHCP leases', 'No active DHCP leases found.') }}
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
-    <div class="tab-pane fade" id="bandwidth">
-        <div class="card mb-4">
+    <!-- Bandwidth -->
+    <div class="tab-pane fade {{ 'show active' if selected_tab == 'bandwidth' }}" id="bandwidth">
+        <div class="d-flex flex-wrap justify-content-between align-items-center mb-3">
+            <h5 class="mb-0 text-muted"><i class="bi bi-clock me-1"></i>Time range</h5>
+            <div class="dropdown">
+                <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown">
+                    <i class="bi bi-clock me-1"></i>{% for pid, plabel in time_periods %}{% if pid == selected_period %}{{ plabel }}{% endif %}{% endfor %}
+                </button>
+                <ul class="dropdown-menu">
+                    {% for pid, plabel in time_periods %}
+                        <li><a class="dropdown-item {% if pid == selected_period %}active{% endif %}" href="{{ url_for('monitor_router', router_id=router.id, period=pid, tab='bandwidth') }}">{{ plabel }}</a></li>
+                    {% endfor %}
+                </ul>
+            </div>
+        </div>
+
+        <div class="app-card">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <h5>Per-IP Bandwidth Usage</h5>
-                <div class="dropdown"><button class="btn btn-outline-secondary dropdown-toggle btn-sm" data-bs-toggle="dropdown">{% for pid, plabel in time_periods %}{% if pid == selected_period %}{{ plabel }}{% endif %}{% endfor %}</button><ul class="dropdown-menu">{% for pid, plabel in time_periods %}<li><a class="dropdown-item {% if pid == selected_period %}active{% endif %}" href="{{ url_for('monitor_router', router_id=router.id, period=pid) }}">{{ plabel }}</a></li>{% endfor %}</ul></div>
+                <h5><i class="bi bi-ethernet me-1"></i>Interface Bandwidth</h5>
+                {% if interface_bandwidth_stats and selected_period in interface_bandwidth_stats %}<span class="text-muted small">{{ interface_bandwidth_stats[selected_period]|length }} interfaces</span>{% endif %}
             </div>
-            <div class="card-body">{% if bandwidth_stats and selected_period in bandwidth_stats and bandwidth_stats[selected_period] %}<div class="table-responsive table-scroll"><table class="table table-striped table-sm"><thead><tr><th>IP Address</th><th>Upload</th><th>Download</th></tr></thead><tbody>{% for ip, s in bandwidth_stats[selected_period].items() %}<tr onclick="showBandwidthChart('{{ ip }}')" style="cursor:pointer"><td><code>{{ ip }}</code></td><td><span class="badge bg-warning">{{ "%.2f"|format(s.tx_mb * 8) }} Mbps</span></td><td><span class="badge bg-info">{{ "%.2f"|format(s.rx_mb * 8) }} Mbps</span></td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="text-muted">No bandwidth data available. Collector fetches every 60s.</p>{% endif %}</div>
+            <div class="card-body p-0">
+                {% if interface_bandwidth_stats and selected_period in interface_bandwidth_stats and interface_bandwidth_stats[selected_period] %}
+                    <div class="table-scroll">
+                        <table class="table-app"><thead><tr><th>Interface</th><th class="text-end">Upload</th><th class="text-end">Download</th></tr></thead>
+                        <tbody>
+                            {% for iface, s in interface_bandwidth_stats[selected_period].items() %}
+                            <tr class="cursor-pointer bandwidth-row" data-type="interface" data-name="{{ iface }}" title="Click to view chart">
+                                <td><strong>{{ iface }}</strong></td>
+                                <td class="text-end"><span class="badge-soft amber">{{ "%.2f"|format(s.tx_mb) }} MB</span></td>
+                                <td class="text-end"><span class="badge-soft blue">{{ "%.2f"|format(s.rx_mb) }} MB</span></td>
+                            </tr>
+                            {% endfor %}
+                        </tbody></table>
+                    </div>
+                {% else %}
+                    {{ empty_state('ethernet', 'No interface bandwidth yet', 'Interface traffic is collected every 60 seconds. Check back shortly.') }}
+                {% endif %}
+            </div>
         </div>
-        <div class="card mb-4" id="bandwidthChartSection" style="display:none"><div class="card-header"><h5>Bandwidth Chart</h5></div><div class="card-body"><canvas id="bandwidthChart" height="200"></canvas><button class="btn btn-sm btn-outline-secondary mt-2" onclick="document.getElementById('bandwidthChartSection').style.display='none'">Close</button></div></div>
+
+        <div class="app-card">
+            <div class="card-header"><h5><i class="bi bi-bar-chart-line me-1"></i>Per-IP Bandwidth</h5></div>
+            <div class="card-body p-0">
+                {% if bandwidth_stats and selected_period in bandwidth_stats and bandwidth_stats[selected_period] %}
+                    <div class="table-scroll">
+                        <table class="table-app"><thead><tr><th>IP Address</th><th class="text-end">Upload</th><th class="text-end">Download</th></tr></thead>
+                        <tbody>
+                            {% for ip, s in bandwidth_stats[selected_period].items() %}
+                            <tr class="cursor-pointer bandwidth-row" data-type="ip" data-name="{{ ip }}" title="Click to view chart">
+                                <td><code>{{ ip }}</code></td>
+                                <td class="text-end"><span class="badge-soft amber">{{ "%.2f"|format(s.tx_mb) }} MB</span></td>
+                                <td class="text-end"><span class="badge-soft blue">{{ "%.2f"|format(s.rx_mb) }} MB</span></td>
+                            </tr>
+                            {% endfor %}
+                        </tbody></table>
+                    </div>
+                {% else %}
+                    {{ empty_state('bar-chart-line', 'No per-IP data', 'Per-IP bandwidth requires IP accounting enabled on the router (/ip accounting). Interface bandwidth above is available regardless.') }}
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="app-card" id="bandwidthChartSection" style="display:none">
+            <div class="card-header d-flex justify-content-between align-items-center"><h5 id="bandwidthChartTitle"><i class="bi bi-graph-up me-1"></i>Bandwidth Chart</h5><button class="btn btn-sm btn-outline-secondary" onclick="document.getElementById('bandwidthChartSection').style.display='none'">Close</button></div>
+            <div class="card-body">
+                <div id="bandwidthChartEmpty" class="text-center text-muted py-5" style="display:none;">Not enough data points yet. Bandwidth data is collected every 60 seconds &mdash; check back shortly.</div>
+                <div id="bandwidthChartContainer" style="position: relative; height: 320px;">
+                    <canvas id="bandwidthChart"></canvas>
+                </div>
+            </div>
+        </div>
     </div>
 
-    <div class="tab-pane fade" id="alerts">
-        <div class="card mb-4">
-            <div class="card-header d-flex justify-content-between align-items-center"><h5>Alert Rules</h5>{% if session.role in ('admin','operator') %}<button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addAlertRuleModal">Add Rule</button>{% endif %}</div>
-            <div class="card-body"><div id="alertRulesContainer"><p class="text-muted">Loading...</p></div></div>
+    <!-- Alerts -->
+    <div class="tab-pane fade {{ 'show active' if selected_tab == 'alerts' }}" id="alerts">
+        <div class="app-card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5><i class="bi bi-sliders me-1"></i>Alert Rules</h5>
+                {% if session.role in ('admin','operator') %}<button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addAlertRuleModal"><i class="bi bi-plus-circle me-1"></i>Add Rule</button>{% endif %}
+            </div>
+            <div class="card-body"><div id="alertRulesContainer"><p class="text-muted mb-0"><span class="loading-spinner me-2"></span>Loading alert rules&hellip;</p></div></div>
         </div>
-        <div class="card">
-            <div class="card-header"><h5>Alert Events</h5></div>
-            <div class="card-body">{% if alerts %}<div class="table-responsive"><table class="table table-sm table-striped"><thead><tr><th>Time</th><th>Type</th><th>Message</th><th>Status</th><th>Action</th></tr></thead><tbody>{% for a in alerts %}<tr><td><small>{{ a.triggered_at }}</small></td><td><span class="badge bg-info">{{ a.metric_type }}</span></td><td><small>{{ a.message[:100] }}</small></td><td>{% if a.status == 'active' %}<span class="badge bg-danger">Active</span>{% elif a.status == 'acknowledged' %}<span class="badge bg-warning">Acknowledged</span>{% else %}<span class="badge bg-success">Resolved</span>{% endif %}</td><td>{% if a.status == 'active' and session.role in ('admin','operator') %}<button class="btn btn-sm btn-outline-secondary" onclick="acknowledgeAlert({{ a.id }})">Acknowledge</button>{% endif %}</td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="text-muted">No alert events</p>{% endif %}</div>
+        <div class="app-card">
+            <div class="card-header"><h5><i class="bi bi-bell me-1"></i>Alert Events</h5></div>
+            <div class="card-body p-0">
+                {% if alerts %}
+                    <div class="table-scroll">
+                        <table class="table-app"><thead><tr><th>Time</th><th>Type</th><th>Message</th><th>Status</th>{% if session.role in ('admin','operator') %}<th>Action</th>{% endif %}</tr></thead>
+                        <tbody>
+                            {% for a in alerts %}
+                            <tr>
+                                <td class="nowrap"><small>{{ a.triggered_at }}</small></td>
+                                <td><span class="badge-soft cyan">{{ a.metric_type }}</span></td>
+                                <td><small>{{ a.message[:120] }}</small></td>
+                                <td>{{ status_badge(a.status) }}</td>
+                                {% if session.role in ('admin','operator') %}
+                                <td>{% if a.status == 'active' %}<button class="btn btn-sm btn-outline-secondary" onclick="acknowledgeAlert({{ a.id }})">Acknowledge</button>{% endif %}</td>
+                                {% endif %}
+                            </tr>
+                            {% endfor %}
+                        </tbody></table>
+                    </div>
+                {% else %}
+                    {{ empty_state('bell', 'No alert events', 'No alerts have been triggered for this router.') }}
+                {% endif %}
+            </div>
         </div>
     </div>
 
-    <div class="tab-pane fade" id="backups">
-        <div class="card mb-4">
-            <div class="card-header d-flex justify-content-between align-items-center"><h5>Backups</h5><div>{% if session.role in ('admin','operator') and source_type != 'SNMP' %}<a href="{{ url_for('trigger_backup', router_id=router.id) }}" class="btn btn-primary btn-sm" onclick="return confirm('Run backup?')">Run Backup</a>{% endif %}<a href="{{ url_for('backup_diff', router_id=router.id) }}" class="btn btn-outline-info btn-sm ms-1">Compare Last Two</a></div></div>
-            <div class="card-body">{% if backups %}<div class="table-responsive"><table class="table table-sm table-striped"><thead><tr><th>Filename</th><th>Size</th><th>Date</th></tr></thead><tbody>{% for b in backups %}<tr><td><code>{{ b.filename }}</code></td><td>{{ (b.size/1024)|round(1) }} KB</td><td>{{ b.mtime }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="text-muted">No backups</p>{% endif %}</div>
+    <!-- Backups -->
+    <div class="tab-pane fade {{ 'show active' if selected_tab == 'backups' }}" id="backups">
+        <div class="app-card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5><i class="bi bi-archive me-1"></i>Backups</h5>
+                <div>
+                    {% if session.role in ('admin','operator') and source_type != 'SNMP' %}
+                        <form method="POST" action="{{ url_for('trigger_backup', router_id=router.id) }}" class="d-inline m-0" onsubmit="return confirm('Run backup?')">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="btn btn-primary btn-sm"><i class="bi bi-download me-1"></i>Run Backup</button>
+                        </form>
+                    {% endif %}
+                    <a href="{{ url_for('backup_diff', router_id=router.id) }}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-file-diff me-1"></i>Compare Last Two</a>
+                </div>
+            </div>
+            <div class="card-body p-0">
+                {% if backups %}
+                    <div class="table-scroll">
+                        <table class="table-app"><thead><tr><th>Filename</th><th class="text-end">Size</th><th>Date</th></tr></thead>
+                        <tbody>{% for b in backups %}<tr><td><code>{{ b.filename }}</code></td><td class="text-end">{{ (b.size/1024)|round(1) }} KB</td><td class="nowrap"><small>{{ b.mtime }}</small></td></tr>{% endfor %}</tbody></table>
+                    </div>
+                {% else %}
+                    {{ empty_state('archive', 'No backups', 'Run a backup to snapshot this router\'s configuration.') }}
+                {% endif %}
+            </div>
         </div>
     </div>
 
-    <div class="tab-pane fade" id="logs">
-        <div class="card mb-4">
-            <div class="card-header"><h5>Logs Summary</h5></div>
-            <div class="card-body"><div class="row text-center"><div class="col-3"><h4 class="text-primary">{{ log_stats.total }}</h4><small>Total</small></div><div class="col-3"><h4 class="text-danger">{{ log_stats.severities.critical or 0 }}</h4><small>Critical</small></div><div class="col-3"><h4 class="text-warning">{{ log_stats.severities.error or 0 }}</h4><small>Errors</small></div><div class="col-3"><h4 class="text-info">{{ log_stats.severities.warning or 0 }}</h4><small>Warnings</small></div></div><div class="d-grid mt-3"><a href="{{ url_for('router_logs', router_id=router.id) }}" class="btn btn-outline-primary">View All Logs</a></div></div>
+    <!-- Logs -->
+    <div class="tab-pane fade {{ 'show active' if selected_tab == 'logs' }}" id="logs">
+        <div class="app-card">
+            <div class="card-header"><h5><i class="bi bi-journal-text me-1"></i>Logs Summary</h5></div>
+            <div class="card-body">
+                <div class="stat-grid" style="grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); margin-bottom: 1rem;">
+                    {{ stat_card('journal-text', 'blue', log_stats.total, 'Total') }}
+                    {{ stat_card('exclamation-octagon', 'red', log_stats.severities.critical or 0, 'Critical') }}
+                    {{ stat_card('exclamation-triangle', 'amber', log_stats.severities.error or 0, 'Errors') }}
+                    {{ stat_card('info-circle', 'cyan', log_stats.severities.warning or 0, 'Warnings') }}
+                </div>
+                <a href="{{ url_for('router_logs', router_id=router.id) }}" class="btn btn-outline-primary"><i class="bi bi-list-ul me-1"></i>View All Logs</a>
+            </div>
         </div>
     </div>
 </div>
 
-<div class="modal fade" id="addAlertRuleModal"><div class="modal-dialog"><div class="modal-content"><div class="modal-header"><h5>Add Alert Rule</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
-<form id="alertRuleForm"><div class="modal-body">
-<div class="mb-3"><label>Metric</label><select class="form-select" name="metric_type"><option value="cpu">CPU</option><option value="memory">Memory</option><option value="interface_down">Interface Down</option><option value="connections">Connections</option><option value="log_match">Log Match</option></select></div>
-<div class="mb-3"><label>Condition</label><select class="form-select" name="condition"><option value="gt">></option><option value="lt"><</option><option value="eq">=</option><option value="contains">Contains</option></select></div>
-<div class="mb-3"><label>Threshold</label><input type="text" class="form-control" name="threshold_value"></div>
-<div class="mb-3"><label>Duration (sec)</label><input type="number" class="form-control" name="duration_seconds" value="0"></div>
-<div class="mb-3"><label>Action</label><select class="form-select" name="action"><option value="email">Email</option><option value="webhook">Webhook</option><option value="syslog">Syslog</option></select></div>
-<div class="mb-3"><label>Config (JSON)</label><textarea class="form-control" name="action_config" rows="2">{}</textarea></div>
-</div><div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button><button type="submit" class="btn btn-primary">Add</button></div></form></div></div></div>
+<!-- Add Alert Rule Modal -->
+<div class="modal fade" id="addAlertRuleModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form id="alertRuleForm">
+                <div class="modal-header">
+                    <h5 class="modal-title">Add Alert Rule</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">Metric</label>
+                        <select class="form-select" name="metric_type">
+                            <option value="cpu">CPU</option><option value="memory">Memory</option>
+                            <option value="interface_down">Interface Down</option><option value="connections">Connections</option>
+                            <option value="log_match">Log Match</option>
+                        </select>
+                    </div>
+                    <div class="row">
+                        <div class="col-6 mb-3">
+                            <label class="form-label">Condition</label>
+                            <select class="form-select" name="condition"><option value="gt">&gt;</option><option value="lt">&lt;</option><option value="eq">=</option><option value="contains">Contains</option></select>
+                        </div>
+                        <div class="col-6 mb-3">
+                            <label class="form-label">Threshold</label>
+                            <input type="text" class="form-control" name="threshold_value">
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Duration (seconds)</label>
+                        <input type="number" class="form-control" name="duration_seconds" value="0">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Action</label>
+                        <select class="form-select" name="action"><option value="email">Email</option><option value="webhook">Webhook</option><option value="syslog">Syslog</option></select>
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label">Config (JSON)</label>
+                        <textarea class="form-control" name="action_config" rows="2">{}</textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Add Rule</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}
 
+{% block scripts %}
 <script>
+document.addEventListener('DOMContentLoaded', function () {
+    const selectedTab = '{{ selected_tab }}';
+    if (selectedTab && selectedTab !== 'system') {
+        const trigger = document.getElementById(selectedTab + '-tab');
+        if (trigger) { new bootstrap.Tab(trigger).show(); }
+    }
+});
+
 function loadAlertRules() {
     axios.get(`/api/alert_rules/{{ router.id }}`).then(r => {
-        let c = document.getElementById('alertRulesContainer');
+        const c = document.getElementById('alertRulesContainer');
         if (r.data.success && r.data.data.length) {
-            let h = '<table class="table table-sm table-striped"><thead><tr><th>Type</th><th>Condition</th><th>Threshold</th><th>Action</th><th>Status</th>{% if session.role == 'admin' %}<th></th>{% endif %}</tr></thead><tbody>';
-            r.data.data.forEach(rule => { h += `<tr><td><span class="badge bg-info">${rule.metric_type}</span></td><td>${rule.condition}</td><td>${rule.threshold_value}</td><td>${rule.action}</td><td>${rule.enabled ? '<span class="badge bg-success">Enabled</span>' : '<span class="badge bg-secondary">Disabled</span>'}</td>{% if session.role == 'admin' %}<td><button class="btn btn-sm btn-outline-danger" onclick="deleteRule(${rule.id})">Delete</button></td>{% endif %}</tr>`; });
+            let h = '<table class="table-app"><thead><tr><th>Type</th><th>Condition</th><th>Threshold</th><th>Action</th><th>Status</th>{% if session.role == 'admin' %}<th></th>{% endif %}</tr></thead><tbody>';
+            r.data.data.forEach(rule => {
+                h += `<tr><td><span class="badge-soft cyan">${rule.metric_type}</span></td><td>${rule.condition}</td><td>${rule.threshold_value}</td><td>${rule.action}</td><td>${rule.enabled ? '<span class="badge-soft green">Enabled</span>' : '<span class="badge-soft gray">Disabled</span>'}</td>{% if session.role == 'admin' %}<td><button class="btn btn-sm btn-outline-danger" onclick="deleteRule(${rule.id})"><i class="bi bi-trash"></i></button></td>{% endif %}</tr>`;
+            });
             h += '</tbody></table>'; c.innerHTML = h;
-        } else { c.innerHTML = '<p class="text-muted">No alert rules</p>'; }
-    }).catch(() => { document.getElementById('alertRulesContainer').innerHTML = '<p class="text-muted">Failed to load</p>'; });
+        } else { c.innerHTML = '<p class="text-muted mb-0">No alert rules configured.</p>'; }
+    }).catch(() => { document.getElementById('alertRulesContainer').innerHTML = '<p class="text-muted mb-0">Failed to load alert rules.</p>'; });
 }
 loadAlertRules();
-document.getElementById('alertRuleForm').addEventListener('submit', function(e) {
+
+document.getElementById('alertRuleForm').addEventListener('submit', function (e) {
     e.preventDefault(); let fd = new FormData(this); let d = {};
-    fd.forEach((v,k)=>d[k]=v);
-    axios.post(`/api/alert_rules/{{ router.id }}`, d).then(r => { if(r.data.success) { bootstrap.Modal.getInstance(document.getElementById('addAlertRuleModal')).hide(); loadAlertRules(); } });
-});
-function acknowledgeAlert(id) { axios.post(`/api/alerts/acknowledge/${id}`).then(() => location.reload()); }
-function deleteRule(id) { if(confirm('Delete?')) axios.post(`/api/alert_rules/${id}/delete`).then(() => loadAlertRules()); }
-function showBandwidthChart(ip) {
-    axios.get(`/api/chart/bandwidth/{{ router.id }}?ip=${ip}&period={{ selected_period }}`).then(r => {
-        if(r.data.success && r.data.data && r.data.data.length) {
-            document.getElementById('bandwidthChartSection').style.display = 'block';
-            new Chart(document.getElementById('bandwidthChart').getContext('2d'), { type: 'line', data: {
-                labels: r.data.data.map(d=>d.timestamp),
-                datasets: [
-                    { label: 'Download Mbps', data: r.data.data.map(d=>d.download_mbps), borderColor: '#0d6efd', fill: false },
-                    { label: 'Upload Mbps', data: r.data.data.map(d=>d.upload_mbps), borderColor: '#ffc107', fill: false }
-                ]}, options: { responsive: true, maintainAspectRatio: false } });
+    fd.forEach((v, k) => d[k] = v);
+    axios.post(`/api/alert_rules/{{ router.id }}`, d).then(r => {
+        if (r.data.success) {
+            bootstrap.Modal.getInstance(document.getElementById('addAlertRuleModal')).hide();
+            loadAlertRules();
         }
     });
+});
+function acknowledgeAlert(id) { axios.post(`/api/alerts/acknowledge/${id}`).then(() => location.reload()); }
+function deleteRule(id) { if (confirm('Delete this rule?')) axios.post(`/api/alert_rules/${id}/delete`).then(() => loadAlertRules()); }
+
+let bandwidthChartInstance = null;
+
+function renderBandwidthChart(url, title) {
+    if (typeof Chart === 'undefined') {
+        alert('Charting library failed to load. Please check your internet connection and reload the page.');
+        return;
+    }
+    const section = document.getElementById('bandwidthChartSection');
+    const emptyEl = document.getElementById('bandwidthChartEmpty');
+    const containerEl = document.getElementById('bandwidthChartContainer');
+    section.style.display = 'block';
+    document.getElementById('bandwidthChartTitle').innerHTML = '<i class="bi bi-graph-up me-1"></i>' + title;
+
+    axios.get(url).then(r => {
+        const points = (r.data && r.data.data) || [];
+        if (points.length < 2) {
+            if (bandwidthChartInstance) { bandwidthChartInstance.destroy(); bandwidthChartInstance = null; }
+            emptyEl.style.display = 'block';
+            containerEl.style.display = 'none';
+            return;
+        }
+        emptyEl.style.display = 'none';
+        containerEl.style.display = 'block';
+        const ctx = document.getElementById('bandwidthChart').getContext('2d');
+        if (bandwidthChartInstance) { bandwidthChartInstance.destroy(); }
+        bandwidthChartInstance = new Chart(ctx, {
+            type: 'line', data: {
+                labels: points.map(d => d.timestamp),
+                datasets: [
+                    { label: 'Download Mbps', data: points.map(d => d.download_mbps), borderColor: '#2563eb', backgroundColor: 'rgba(37,99,235,0.1)', fill: true, tension: 0.3 },
+                    { label: 'Upload Mbps', data: points.map(d => d.upload_mbps), borderColor: '#f59e0b', backgroundColor: 'rgba(245,158,11,0.1)', fill: true, tension: 0.3 }
+                ]
+            }, options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true } } }
+        });
+    }).catch(err => {
+        console.error('Bandwidth chart error:', err);
+        alert('Failed to load bandwidth chart data.');
+    });
 }
+
+// Event delegation: handle clicks on any bandwidth table row without relying on
+// inline onclick handlers (which break for interface names containing < >).
+document.addEventListener('click', function (e) {
+    const row = e.target.closest('.bandwidth-row');
+    if (!row) return;
+    const type = row.dataset.type;
+    const name = row.dataset.name;
+    if (!name) return;
+    const encoded = encodeURIComponent(name);
+    const url = type === 'ip'
+        ? `/api/chart/bandwidth/{{ router.id }}?ip=${encoded}&period={{ selected_period }}`
+        : `/api/chart/interface_bandwidth/{{ router.id }}?interface=${encoded}&period={{ selected_period }}`;
+    renderBandwidthChart(url, (type === 'ip' ? 'IP ' : 'Interface ') + name);
+});
 </script>
 {% endblock %}

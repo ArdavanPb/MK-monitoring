@@ -9,9 +9,10 @@ A Flask-based web application that connects to MikroTik routers via the RouterOS
 | Component | Technology |
 |-----------|------------|
 | **Backend** | Python 3.9+ / Flask 2.3.3 |
-| **Database** | SQLite (single file: `data/routers.db`) |
+| **Database** | SQLite (single file: `data/routers.db`, WAL mode) |
 | **Router Connectivity** | `routeros-api==0.18` (MikroTik RouterOS API) |
-| **Scheduler** | `schedule==1.2.1` (background data collection) |
+| **Background workers** | `snmp_collector.py`, `alert_engine.py` (standalone processes) |
+| **Credential encryption** | `cryptography` (Fernet) |
 | **Frontend** | Bootstrap 5 / Jinja2 Templates |
 | **Deployment** | Docker / Docker Compose |
 | **Port** | 8080 |
@@ -122,18 +123,32 @@ api = connection.get_api()
 connection.disconnect()
 ```
 
-### Background Collector (`bandwidth_collector.py`)
-- Runs alongside the Flask app (started by `start.sh`)
-- Collects per-IP and per-interface bandwidth data every 60 seconds
-- Collects router logs every 5 minutes
-- Imports data into `ip_bandwidth_data` and `interface_bandwidth_data` tables
-- Respects status cache (skips offline routers)
+### Background Collectors
+Three standalone processes run alongside the Flask app (started by `start.sh` /
+`docker-start.sh`):
+- `snmp_collector.py` polls SNMP-enabled routers every 60 seconds for system and
+  interface metrics, writing into `snmp_system_metrics` and
+  `snmp_interface_metrics`.
+- `bandwidth_collector.py` polls API-enabled routers every 60 seconds and stores
+  per-IP traffic counters into `ip_bandwidth_data`.
+- `alert_engine.py` evaluates enabled alert rules every 30 seconds and fires
+  email/webhook/syslog notifications.
+
+### Module Structure
+| Module | Responsibility |
+|--------|----------------|
+| `config.py` | Environment-based settings, key files |
+| `db.py` | Schema/migrations, WAL connections |
+| `security.py` | Password hashing, Fernet encryption, CSRF, rate limiting |
+| `utils.py` | Formatting, duration parsing, IP classification |
+| `routeros_client.py` | RouterOS API connectivity + data retrieval |
+| `services.py` | Business logic (bandwidth, connections, logs, backups, alerts) |
+| `app.py` | Flask app factory + routes |
 
 ### Firewall Connection Caching
-- 10-second TTL cache (`firewall_connections_cache` dict)
-- Thread-safe with lock
+- 10-second TTL LRU cache with a maximum size (thread-safe)
 - Processes `/ip/firewall/connection` data to extract internal→external traffic
-- Classifies internal vs external IPs using prefix matching (`192.168.`, `10.`, `172.16-31.`)
+- Classifies internal vs external IPs using `ipaddress` private-network membership
 - Maps hostnames via DHCP leases and ARP table
 - Parses RouterOS duration format (`2h15m30s`)
 - Identifies services by destination port (40+ common ports mapped)
@@ -177,12 +192,12 @@ pip install -r requirements.txt
 
 ## Performance Optimizations
 
-1. **Simple IP classification**: Pre-compiled network range tuples instead of regex
-2. **Batch database operations**: `executemany()` for bulk inserts
-3. **Early filtering**: Skip invalid connections during parsing
-4. **Connection caching**: 10s TTL for firewall connections
-5. **Status caching**: Router status cached to avoid repeated failed connections
-6. **Graceful degradation**: If bandwidth data is empty, generates sample data for testing
+1. **IP classification**: `ipaddress` private-network membership (accurate and fast)
+2. **SQLite WAL + busy timeout**: safe concurrent access from app + collectors
+3. **Batch database operations**: `executemany()` for bulk inserts
+4. **Early filtering**: Skip invalid connections during parsing
+5. **Connection caching**: 10s TTL LRU cache for firewall connections
+6. **Status caching**: Router status cached to avoid repeated failed connections
 7. **Multiple field fallbacks**: Handles different RouterOS versions by trying multiple field names
 
 ## Critical Stability Rules

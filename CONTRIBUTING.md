@@ -87,8 +87,16 @@ docker-compose up -d
 
 ```
 mk-monitoring/
-├── app.py                    # Main Flask application
-├── bandwidth_collector.py    # Background data collection
+├── app.py                    # Flask app factory + routes
+├── config.py                 # Environment-based configuration
+├── db.py                     # Database layer (schema, migrations, connections)
+├── security.py               # Hashing, encryption, CSRF, rate limiting
+├── utils.py                  # Formatting, parsing, IP classification
+├── routeros_client.py        # RouterOS API connectivity
+├── services.py               # Business logic
+├── snmp_collector.py         # Background SNMP metrics collector
+├── bandwidth_collector.py    # Background per-IP bandwidth collector
+├── alert_engine.py           # Background alert evaluator
 ├── requirements.txt          # Python dependencies
 ├── templates/                # HTML templates
 ├── data/                     # Database directory (created automatically)

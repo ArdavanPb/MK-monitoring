@@ -148,10 +148,16 @@ Before using this application, ensure your MikroTik router has API access enable
 
 ## Security Notes
 
-- Credentials are stored in a local SQLite database
+- Router and SNMP credentials are encrypted at rest using Fernet (AES-128) with a
+  key persisted under the data directory (or supplied via `FERNET_KEY`)
+- User passwords are hashed with PBKDF2 (legacy SHA-256 hashes are upgraded on login)
+- All state-changing requests are protected against CSRF
+- Login attempts are rate-limited to prevent brute force
 - The application uses plaintext API authentication (required by MikroTik API)
+- Set `SECRET_KEY` in the environment for a stable session/CSRF signing key
 - Consider running this application on a secure internal network
 - Use dedicated API users with minimal required permissions
+- Change the default `admin` / `admin` credentials after first login
 
 ## API Information Retrieved
 
@@ -169,16 +175,21 @@ Before using this application, ensure your MikroTik router has API access enable
 
 ```
 mk-monitoring/
-├── app.py              # Main Flask application
-├── routers.db          # SQLite database (created automatically)
+├── app.py              # Flask app factory + routes
+├── config.py           # Environment-based configuration
+├── db.py               # Database layer (schema, migrations, connections)
+├── security.py         # Password hashing, encryption, CSRF, rate limiting
+├── utils.py            # Formatting, parsing, IP classification helpers
+├── routeros_client.py  # RouterOS API connectivity + data retrieval
+├── services.py         # Business logic (bandwidth, connections, logs, backups)
+├── snmp_collector.py   # Background SNMP metrics collector
+├── bandwidth_collector.py # Background per-IP bandwidth collector
+├── alert_engine.py     # Background alert rule evaluator
+├── data/routers.db     # SQLite database (created automatically)
 ├── requirements.txt    # Python dependencies
 ├── templates/          # HTML templates
-│   ├── base.html
-│   ├── index.html
-│   └── add_router.html
 ├── Dockerfile          # Docker container definition
 ├── docker-compose.yml  # Docker Compose configuration
-├── .dockerignore       # Docker ignore patterns
 ├── setup.sh           # Manual setup script
 ├── run.sh             # Manual run script
 └── README.md
@@ -225,4 +236,6 @@ python app.py
 
 ## Database Storage
 
-The application uses SQLite database stored in `/tmp/routers.db` within the container. Note that data will be lost when the container is removed. For persistent storage, you can modify the docker-compose.yml to mount a volume.
+The application uses a SQLite database (WAL mode) at `data/routers.db` locally and
+`/app/data/routers.db` inside the container. The Docker Compose setup mounts the
+`./data` directory as a persistent volume, so data survives container restarts.

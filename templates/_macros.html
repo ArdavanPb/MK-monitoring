@@ -1,0 +1,37 @@
+{# Reusable UI components for MK-Monitoring. #}
+
+{% macro status_badge(status, label=None) %}
+  {% set normalized = status|string|lower %}
+  {% if normalized in ['online', 'up', 'success', 'bound'] %}
+    <span class="badge-soft green"><span class="status-dot online me-1"></span>{{ label or status|title }}</span>
+  {% elif normalized in ['offline', 'down', 'error', 'critical', 'failed', 'active'] %}
+    <span class="badge-soft red"><span class="status-dot offline me-1"></span>{{ label or status|title }}</span>
+  {% elif normalized in ['warning', 'acknowledged', 'pending'] %}
+    <span class="badge-soft amber"><span class="status-dot warning me-1"></span>{{ label or status|title }}</span>
+  {% elif normalized in ['resolved'] %}
+    <span class="badge-soft gray"><span class="status-dot me-1"></span>{{ label or status|title }}</span>
+  {% else %}
+    <span class="badge-soft cyan">{{ label or status|title }}</span>
+  {% endif %}
+{% endmacro %}
+
+{% macro empty_state(icon='inbox', title='No data', message='', action_url=None, action_label=None) %}
+  <div class="state-box">
+    <div class="state-icon"><i class="bi bi-{{ icon }}"></i></div>
+    <h5>{{ title }}</h5>
+    {% if message %}<p>{{ message }}</p>{% endif %}
+    {% if action_url and action_label %}
+      <a href="{{ action_url }}" class="btn btn-outline-primary btn-sm">{{ action_label }}</a>
+    {% endif %}
+  </div>
+{% endmacro %}
+
+{% macro stat_card(icon, color, value, label) %}
+  <div class="stat-card">
+    <div class="stat-icon {{ color }}"><i class="bi bi-{{ icon }}"></i></div>
+    <div>
+      <div class="stat-value">{{ value }}</div>
+      <div class="stat-label">{{ label }}</div>
+    </div>
+  </div>
+{% endmacro %}

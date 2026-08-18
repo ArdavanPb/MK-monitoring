@@ -1,26 +1,32 @@
 {% extends "base.html" %}
 
+{% block title %}Backup Diff &middot; {{ router.name }}{% endblock %}
+
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-4">
+<div class="page-header">
     <div>
-        <h1>Backup Diff: {{ router.name }}</h1>
-        <small class="text-muted">Comparing last two configuration backups</small>
+        <h1 class="page-title">Backup Diff</h1>
+        <p class="page-subtitle">{{ router.name }} &middot; Comparing the last two configuration backups</p>
     </div>
-    <div>
-        <a href="{{ url_for('monitor_router', router_id=router.id) }}" class="btn btn-secondary">Back to Monitor</a>
+    <div class="page-actions">
+        <a href="{{ url_for('monitor_router', router_id=router.id) }}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-1"></i>Back to Monitor</a>
     </div>
 </div>
 
-<div class="card mb-4">
-    <div class="card-header">
-        <h5 class="card-title mb-0">Diff: {{ older }} → {{ newer }}</h5>
+<div class="app-card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5><i class="bi bi-file-diff me-1"></i>{{ older }} &rarr; {{ newer }}</h5>
     </div>
     <div class="card-body">
-        {% if diff_text %}
-            <pre class="diff" style="max-height: 600px; overflow-y: auto; font-size: 12px; line-height: 1.4;">{% for line in diff_text.split('\n') %}{% if line.startswith('+') and not line.startswith('+++') %}<span class="diff-added">{{ line }}</span>{% elif line.startswith('-') and not line.startswith('---') %}<span class="diff-removed">{{ line }}</span>{% elif line.startswith('@') %}<span class="diff-header">{{ line }}</span>{% else %}<span class="diff-context">{{ line }}</span>{% endif %}
+        {% if diff_text and diff_text != '(identical)' %}
+            <pre class="rounded p-3 mb-0" style="background: #0f172a; color: #e2e8f0; max-height: 600px; overflow: auto; font-size: 12px; line-height: 1.5;">{% for line in diff_text.split('\n') %}{% if line.startswith('+') and not line.startswith('+++') %}<span style="color:#4ade80">{{ line }}</span>{% elif line.startswith('-') and not line.startswith('---') %}<span style="color:#f87171">{{ line }}</span>{% elif line.startswith('@@') %}<span style="color:#38bdf8">{{ line }}</span>{% else %}<span style="color:#94a3b8">{{ line }}</span>{% endif %}
 {% endfor %}</pre>
         {% else %}
-            <p class="text-muted">{{ diff_text }}</p>
+            <div class="state-box">
+                <div class="state-icon"><i class="bi bi-check-circle"></i></div>
+                <h5>No changes</h5>
+                <p>The two most recent backups are identical.</p>
+            </div>
         {% endif %}
     </div>
 </div>

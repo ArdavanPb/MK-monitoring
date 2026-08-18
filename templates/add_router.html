@@ -1,65 +1,124 @@
 {% extends "base.html" %}
 
+{% block title %}{{ 'Edit Router' if edit_mode else 'Add Router' }} &middot; MikroTik Monitor{% endblock %}
+
 {% block content %}
 <div class="row justify-content-center">
-    <div class="col-md-6">
-        <div class="card">
-            <div class="card-header">
-                <h4 class="card-title mb-0">Add New Router</h4>
+    <div class="col-lg-8">
+        <div class="page-header">
+            <div>
+                <h1 class="page-title">{{ 'Edit Router' if edit_mode else 'Add Router' }}</h1>
+                <p class="page-subtitle">{{ 'Update connection and monitoring settings' if edit_mode else 'Connect a MikroTik router for monitoring' }}</p>
             </div>
+            <div class="page-actions">
+                <a href="{{ url_for('index') }}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-1"></i>Dashboard</a>
+            </div>
+        </div>
+
+        <div class="app-card">
             <div class="card-body">
-                <form method="POST">
-                    <div class="mb-3">
-                        <label for="name" class="form-label">Router Display Name</label>
-                        <input type="text" class="form-control" id="name" name="name" required 
-                               placeholder="e.g., Office Router">
+                <form method="POST" novalidate>
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+                    <div class="form-section-title"><i class="bi bi-router me-1"></i>Router Details</div>
+
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="name" class="form-label required">Display Name</label>
+                            <input type="text" class="form-control" id="name" name="name" required
+                                   value="{{ r.name if r else '' }}" placeholder="e.g., Office Router">
+                            <div class="form-text">A friendly name to identify this router.</div>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="host" class="form-label required">IP / Hostname</label>
+                            <input type="text" class="form-control" id="host" name="host" required
+                                   value="{{ r.host if r else '' }}" placeholder="e.g., 192.168.88.1">
+                            <div class="form-text">The router's management address.</div>
+                        </div>
                     </div>
-                    
-                    <div class="mb-3">
-                        <label for="host" class="form-label">Router IP/Hostname</label>
-                        <input type="text" class="form-control" id="host" name="host" required 
-                               placeholder="e.g., 192.168.88.1 or router.example.com">
+
+                    <div class="form-section-title"><i class="bi bi-plug me-1"></i>API Access</div>
+
+                    <div class="form-check form-switch mb-2">
+                        <input class="form-check-input" type="checkbox" id="api_enabled" name="api_enabled" value="1"
+                               {% if r and r.api_enabled %}checked{% endif %}>
+                        <label class="form-check-label" for="api_enabled">Enable API monitoring</label>
                     </div>
-                    
-                    <div class="mb-3">
-                        <label for="port" class="form-label">API Port</label>
-                        <input type="number" class="form-control" id="port" name="port" value="8728" 
-                               placeholder="Default: 8728">
-                        <div class="form-text">Default MikroTik API port is 8728</div>
+
+                    <div id="apiFields" class="border rounded p-3 mb-3 bg-light" style="display:none;">
+                        <div class="row">
+                            <div class="col-md-4 mb-3">
+                                <label for="port" class="form-label">API Port</label>
+                                <input type="number" class="form-control" id="port" name="port" value="{{ r.port if r else 8728 }}">
+                                <div class="form-text">Default: 8728</div>
+                            </div>
+                            <div class="col-md-4 mb-3">
+                                <label for="username" class="form-label required">Username</label>
+                                <input type="text" class="form-control" id="username" name="username"
+                                       value="{{ r.username if r else '' }}" placeholder="API user">
+                            </div>
+                            <div class="col-md-4 mb-3">
+                                <label for="password" class="form-label {{ 'required' if not edit_mode }}">Password</label>
+                                <input type="password" class="form-control" id="password" name="password"
+                                       placeholder="{{ 'Leave blank to keep current' if edit_mode else 'API password' }}">
+                            </div>
+                        </div>
                     </div>
-                    
-                    <div class="mb-3">
-                        <label for="username" class="form-label">API Username</label>
-                        <input type="text" class="form-control" id="username" name="username" required 
-                               placeholder="e.g., admin">
+
+                    <div class="form-section-title"><i class="bi bi-broadcast me-1"></i>SNMP Monitoring</div>
+
+                    <div class="form-check form-switch mb-2">
+                        <input class="form-check-input" type="checkbox" id="snmp_enabled" name="snmp_enabled" value="1"
+                               {% if r and r.snmp_enabled %}checked{% endif %}>
+                        <label class="form-check-label" for="snmp_enabled">Enable SNMP monitoring (v2c)</label>
                     </div>
-                    
-                    <div class="mb-3">
-                        <label for="password" class="form-label">API Password</label>
-                        <input type="password" class="form-control" id="password" name="password" required 
-                               placeholder="Router API password">
+
+                    <div id="snmpFields" class="border rounded p-3 mb-3 bg-light" style="display:none;">
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label for="snmp_community" class="form-label">Community</label>
+                                <input type="text" class="form-control" id="snmp_community" name="snmp_community"
+                                       value="{{ r.snmp_community if r else 'public' }}">
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label for="snmp_port" class="form-label">SNMP Port</label>
+                                <input type="number" class="form-control" id="snmp_port" name="snmp_port"
+                                       value="{{ r.snmp_port if r else 161 }}">
+                                <div class="form-text">Default: 161</div>
+                            </div>
+                        </div>
+                        <input type="hidden" name="snmp_version" value="2">
                     </div>
-                    
+
                     <div class="alert alert-info">
+                        <i class="bi bi-info-circle me-1"></i>
                         <small>
-                            <strong>Connection Requirements:</strong>
-                            <ul class="mb-0 mt-1">
-                                <li>API service must be enabled on the router</li>
-                                <li>User must have API permissions</li>
-                                <li>Default API port is 8728</li>
-                                <li>Network connectivity between application and router</li>
-                            </ul>
+                            The API service must be enabled on the router and the user must have API permissions.
                             <a href="#" data-bs-toggle="modal" data-bs-target="#troubleshootingModal">Having connection issues?</a>
                         </small>
                     </div>
-                    
-                    <div class="d-flex justify-content-between">
-                        <a href="{{ url_for('index') }}" class="btn btn-secondary">Cancel</a>
-                        <button type="submit" class="btn btn-primary">Test Connection & Add Router</button>
+
+                    <div class="d-flex justify-content-end gap-2">
+                        <a href="{{ url_for('index') }}" class="btn btn-outline-secondary">Cancel</a>
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-check2-circle me-1"></i>{{ 'Save Changes' if edit_mode else 'Test Connection & Add Router' }}
+                        </button>
                     </div>
                 </form>
             </div>
         </div>
     </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    function syncSectionVisibility() {
+        document.getElementById('apiFields').style.display = document.getElementById('api_enabled').checked ? 'block' : 'none';
+        document.getElementById('snmpFields').style.display = document.getElementById('snmp_enabled').checked ? 'block' : 'none';
+    }
+    document.getElementById('api_enabled').addEventListener('change', syncSectionVisibility);
+    document.getElementById('snmp_enabled').addEventListener('change', syncSectionVisibility);
+    syncSectionVisibility();
+</script>
 {% endblock %}

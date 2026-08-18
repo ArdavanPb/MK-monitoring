@@ -3,6 +3,11 @@ services:
     build: .
     ports:
       - "8080:8080"
+    environment:
+      # Set a stable secret key (optional: a key file is persisted under /app/data).
+      # SECRET_KEY: "change-me-to-a-long-random-string"
+      # FERNET_KEY: "base64-encoded-fernet-key-for-credential-encryption"
+      DB_PATH: "/app/data/routers.db"
     volumes:
       - ./data:/app/data
     restart: unless-stopped

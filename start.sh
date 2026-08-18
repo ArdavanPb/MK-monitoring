@@ -16,19 +16,19 @@ if ! python -c "open('$DB_PATH','a').close()" 2>/dev/null; then
     export DB_PATH="/tmp/routers.db"
 fi
 
-python -c "from app import init_db; init_db()"
+python -c "import db; db.init_db()"
 sleep 2
 
 python -c "
 import sqlite3, sys
+import db
+conn = db.get_connection()
 try:
-    conn = sqlite3.connect('$DB_PATH')
-    c = conn.cursor()
-    c.execute(\"SELECT name FROM sqlite_master WHERE type='table' AND name='routers'\")
-    if c.fetchone(): print('Database OK')
+    row = conn.execute(\"SELECT name FROM sqlite_master WHERE type='table' AND name='routers'\").fetchone()
+    if row: print('Database OK')
     else: print('ERROR: no routers table'); sys.exit(1)
+finally:
     conn.close()
-except Exception as e: print(f'ERROR: {e}'); sys.exit(1)
 "
 
 python snmp_collector.py &
@@ -39,20 +39,22 @@ python alert_engine.py &
 ALERT_PID=$!
 echo "Started alert engine (PID: $ALERT_PID)"
 
+python bandwidth_collector.py &
+BANDWIDTH_PID=$!
+echo "Started bandwidth collector (PID: $BANDWIDTH_PID)"
+
 (
 while true; do
     if [ "$(date +%H)" = "03" ]; then
         python -c "
-from app import run_router_backup, init_db, db_path
-import sqlite3
-init_db()
-conn = sqlite3.connect('$DB_PATH')
-c = conn.cursor()
-c.execute('SELECT id FROM routers')
-for r in c.fetchall():
-    result = run_router_backup(r[0])
-    print(f'Backup router {r[0]}: {result}')
+import db
+db.init_db()
+from services import run_router_backup
+conn = db.get_connection()
+rows = conn.execute('SELECT id FROM routers').fetchall()
 conn.close()
+for row in rows:
+    print(f'Backup router {row[\"id\"]}: {run_router_backup(row[\"id\"])}')
 "
         sleep 3600
     fi
@@ -64,7 +66,7 @@ echo "Started backup scheduler (PID: $BACKUP_PID)"
 
 cleanup() {
     echo "Shutting down..."
-    kill $SNMP_PID $ALERT_PID $BACKUP_PID 2>/dev/null
+    kill $SNMP_PID $ALERT_PID $BANDWIDTH_PID $BACKUP_PID 2>/dev/null
     wait
     echo "All stopped"
 }

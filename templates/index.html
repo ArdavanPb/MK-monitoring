@@ -1,69 +1,157 @@
 {% extends "base.html" %}
+{% from "_macros.html" import status_badge, empty_state, stat_card %}
+
+{% block title %}Dashboard &middot; MikroTik Monitor{% endblock %}
+
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-4">
-    <h1>Router Dashboard</h1>
-    <a href="{{ url_for('add_router') }}" class="btn btn-primary">Add New Router</a>
-</div>
-{% if routers %}
-<div class="row">
-{% for router in routers %}
-<div class="col-md-6 col-lg-4">
-    <div class="card router-card">
-        <div class="card-header d-flex justify-content-between align-items-center">
-            <h5 class="card-title mb-0">{{ router.name }}</h5>
-            <div>
-                <span class="badge bg-{{ 'success' if router.status == 'online' else 'danger' }}">{{ router.status|title }}</span>
-                <span class="badge bg-info">{{ router.source_type }}</span>
-                <span class="badge bg-secondary">{{ router.host }}:{{ router.display_port }}</span>
-                {% if router.cached %}<span class="badge bg-secondary">Cached</span>{% endif %}
-            </div>
-        </div>
-        <div class="card-body">
-            {% if router.info.error %}
-                <div class="alert alert-danger"><strong>Error:</strong> {{ router.info.error }}</div>
-            {% else %}
-                <div class="mb-2"><strong>Router Name:</strong> {{ router.info.name }}</div>
-                <div class="mb-2"><strong>Uptime:</strong> <span class="badge bg-info status-badge">{{ router.info.uptime }}</span></div>
-                <div class="mb-2">
-                    <strong>Memory Usage:</strong>
-                    <div class="progress mb-1">
-                    {% if router.info.memory_usage_percent != 'N/A' %}
-                        <div class="progress-bar bg-{{ 'success' if router.info.memory_usage_percent|float < 70 else 'warning' if router.info.memory_usage_percent|float < 85 else 'danger' }}" style="width:{{ router.info.memory_usage_percent }}%">{{ router.info.memory_usage_percent }}%</div>
-                    {% else %}
-                        <div class="progress-bar bg-secondary" style="width:100%">N/A</div>
-                    {% endif %}
-                    </div>
-                    <small class="text-muted">{% if router.info.used_memory != 'N/A' %}{{ (router.info.used_memory|int / 1024 / 1024)|round(1) }}MB / {% endif %}{% if router.info.total_memory != 'N/A' %}{{ (router.info.total_memory|int / 1024 / 1024)|round(1) }}MB{% else %}N/A{% endif %}</small>
-                </div>
-                <div class="mb-2"><strong>CPU Load:</strong> <span class="badge bg-{{ 'success' if router.info.cpu_load|float < 50 else 'warning' if router.info.cpu_load|float < 80 else 'danger' }} status-badge">{{ router.info.cpu_load }}%</span></div>
-                <div class="mb-2"><strong>CPU:</strong> {{ router.info.cpu_count if router.info.cpu_count != 'N/A' else 'N/A' }} core{% if router.info.cpu_count != 'N/A' and router.info.cpu_count|int > 1 %}s{% endif %}</div>
-                <div class="mb-2"><strong>Firmware:</strong> {{ router.info.version }}</div>
-                <div class="mb-2"><strong>Board:</strong> {{ router.info.board_name }}</div>
-                <div class="mb-2"><strong>Architecture:</strong> {{ router.info.architecture_name }}</div>
-            {% endif %}
-        </div>
-        <div class="card-footer">
-            <div class="d-flex justify-content-between">
-                <a href="{{ url_for('monitor_router', router_id=router.id) }}" class="btn btn-sm btn-outline-success">Monitor</a>
-                <div class="d-flex gap-1">
-                    <a href="{{ url_for('edit_router', router_id=router.id) }}" class="btn btn-sm btn-outline-primary">Edit</a>
-                    <a href="{{ url_for('refresh_router', router_id=router.id) }}" class="btn btn-sm btn-outline-info">Refresh</a>
-                    <a href="{{ url_for('delete_router', router_id=router.id) }}" class="btn btn-sm btn-outline-danger" onclick="return confirm('Delete this router?')">Delete</a>
-                </div>
-            </div>
-            <div class="mt-2 text-center">
-                <a href="/connections/{{ router.id }}" class="btn btn-info btn-sm" id="live-connections-btn-{{ router.id }}">Live Connections (<span id="connection-count-{{ router.id }}">0</span>)</a>
-            </div>
-        </div>
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Router Dashboard</h1>
+        <p class="page-subtitle">Overview of all monitored MikroTik routers</p>
+    </div>
+    <div class="page-actions">
+        {% if session.role in ('admin', 'operator') %}
+            <a href="{{ url_for('add_router') }}" class="btn btn-primary">
+                <i class="bi bi-plus-circle me-1"></i>Add Router
+            </a>
+        {% endif %}
     </div>
 </div>
-{% endfor %}
-</div>
+
+{% if routers %}
+    {% set total = routers|length %}
+    {% set online = routers|selectattr('status', 'equalto', 'online')|list|length %}
+    {% set offline = total - online %}
+    {% set snmp = routers|selectattr('source_type', 'equalto', 'SNMP')|list|length %}
+
+    <div class="stat-grid">
+        {{ stat_card('router', 'blue', total, 'Total Routers') }}
+        {{ stat_card('check-circle', 'green', online, 'Online') }}
+        {{ stat_card('x-circle', 'red', offline, 'Offline') }}
+        {{ stat_card('broadcast', 'cyan', snmp, 'SNMP Monitored') }}
+    </div>
+
+    <div class="router-grid">
+        {% for router in routers %}
+        <div class="app-card router-card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="card-title text-truncate" title="{{ router.name }}">{{ router.name }}</h5>
+                <div class="d-flex gap-1 flex-shrink-0">
+                    {{ status_badge(router.status) }}
+                    <span class="badge-soft cyan">{{ router.source_type }}</span>
+                </div>
+            </div>
+            <div class="card-body d-flex flex-column">
+                <div class="text-mono text-muted small mb-3">
+                    <i class="bi bi-ethernet me-1"></i>{{ router.host }}:{{ router.display_port }}
+                    {% if router.cached %}<span class="badge-soft gray ms-1">cached</span>{% endif %}
+                </div>
+
+                {% if router.info.error %}
+                    <div class="alert alert-danger py-2 px-3 small mb-0">
+                        <i class="bi bi-exclamation-triangle me-1"></i>{{ router.info.error }}
+                    </div>
+                {% else %}
+                    <div class="metric-row">
+                        <span class="metric-label">Status</span>
+                        <span class="metric-value">{{ router.info.name or router.name }}</span>
+                    </div>
+                    <div class="metric-row">
+                        <span class="metric-label">Uptime</span>
+                        <span class="metric-value">{{ router.info.uptime or 'N/A' }}</span>
+                    </div>
+                    <div class="metric-row d-block">
+                        <div class="d-flex justify-content-between mb-1">
+                            <span class="metric-label">Memory</span>
+                            <span class="metric-value">
+                                {% if router.info.memory_usage_percent != 'N/A' %}{{ router.info.memory_usage_percent }}%{% else %}N/A{% endif %}
+                            </span>
+                        </div>
+                        {% if router.info.memory_usage_percent != 'N/A' %}
+                            {% set mem = router.info.memory_usage_percent|float %}
+                            <div class="progress progress-thin">
+                                <div class="progress-bar bg-{{ 'success' if mem < 70 else 'warning' if mem < 85 else 'danger' }}" style="width: {{ mem }}%"></div>
+                            </div>
+                        {% else %}
+                            <div class="progress progress-thin"><div class="progress-bar bg-secondary" style="width: 100%"></div></div>
+                        {% endif %}
+                    </div>
+                    <div class="metric-row">
+                        <span class="metric-label">CPU Load</span>
+                        <span class="metric-value">
+                            {% if router.info.cpu_load != 'N/A' %}
+                                <span class="badge-soft {{ 'green' if router.info.cpu_load|float < 50 else 'amber' if router.info.cpu_load|float < 80 else 'red' }}">{{ router.info.cpu_load }}%</span>
+                            {% else %}N/A{% endif %}
+                        </span>
+                    </div>
+                    <div class="metric-row">
+                        <span class="metric-label">Firmware</span>
+                        <span class="metric-value text-truncate">{{ router.info.version or 'N/A' }}</span>
+                    </div>
+                {% endif %}
+            </div>
+            <div class="card-footer">
+                <div class="d-flex justify-content-between align-items-center">
+                    <a href="{{ url_for('monitor_router', router_id=router.id) }}" class="btn btn-sm btn-primary">
+                        <i class="bi bi-speedometer2 me-1"></i>Monitor
+                    </a>
+                    <div class="d-flex gap-1">
+                        <a href="{{ url_for('edit_router', router_id=router.id) }}" class="btn btn-sm btn-outline-secondary" title="Edit"><i class="bi bi-pencil"></i></a>
+                        <form method="POST" action="{{ url_for('refresh_router', router_id=router.id) }}" class="d-inline m-0" title="Refresh">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="btn btn-sm btn-outline-secondary"><i class="bi bi-arrow-clockwise"></i></button>
+                        </form>
+                        {% if session.role == 'admin' %}
+                        <form method="POST" action="{{ url_for('delete_router', router_id=router.id) }}" class="d-inline m-0" onsubmit="return confirm('Delete this router?')" title="Delete">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
+                        </form>
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="mt-2">
+                    <a href="{{ url_for('connections_page', router_id=router.id) }}" class="btn btn-sm btn-outline-info w-100" id="live-connections-btn-{{ router.id }}">
+                        <i class="bi bi-arrow-left-right me-1"></i>Live Connections
+                        <span class="badge bg-secondary ms-1" id="connection-count-{{ router.id }}">0</span>
+                    </a>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
 {% else %}
-<div class="text-center py-5">
-    <h3>No routers configured</h3>
-    <p class="text-muted">Add your first MikroTik router to get started.</p>
-    <a href="{{ url_for('add_router') }}" class="btn btn-primary">Add Router</a>
-</div>
+    <div class="app-card">
+        <div class="card-body">
+            {{ empty_state('router', 'No routers configured', 'Add your first MikroTik router to start monitoring CPU, memory, bandwidth, and connections.', url_for('add_router'), 'Add Router') }}
+        </div>
+    </div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if routers %}
+<script>
+    function updateConnectionCount(routerId) {
+        const countElement = document.getElementById(`connection-count-${routerId}`);
+        if (!countElement) return;
+        axios.get(`/api/connection-count/${routerId}`)
+            .then(response => {
+                if (response.data.success) {
+                    countElement.textContent = response.data.count;
+                }
+            })
+            .catch(() => { countElement.textContent = '&mdash;'; });
+    }
+    document.addEventListener('DOMContentLoaded', function () {
+        document.querySelectorAll('[id^="connection-count-"]').forEach(el => {
+            updateConnectionCount(el.id.replace('connection-count-', ''));
+        });
+        setInterval(() => {
+            document.querySelectorAll('[id^="connection-count-"]').forEach(el => {
+                updateConnectionCount(el.id.replace('connection-count-', ''));
+            });
+        }, 30000);
+    });
+</script>
 {% endif %}
 {% endblock %}
