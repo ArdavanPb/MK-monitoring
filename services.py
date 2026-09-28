@@ -2,6 +2,7 @@
 import datetime
 import difflib
 import glob
+import ipaddress
 import json
 import logging
 import os
@@ -367,118 +368,6 @@ def collect_interface_bandwidth_data(router_id, api):
         return False
 
 
-_PERIODS_MINUTES = {
-    "1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "3h": 180,
-    "6h": 360, "12h": 720, "24h": 1440, "3d": 4320, "1w": 10080,
-}
-
-
-def get_ip_bandwidth_stats(router_id, time_periods):
-    """Return per-IP traffic totals (bytes transferred) for the requested periods.
-
-    The collector stores cumulative byte counters, so we compute the delta
-    between consecutive samples rather than summing them.
-    """
-    stats = {}
-    conn = db.get_connection()
-    try:
-        for name in time_periods:
-            minutes = _PERIODS_MINUTES.get(name)
-            if minutes is None:
-                continue
-            threshold = datetime.datetime.now() - datetime.timedelta(minutes=minutes)
-            rows = conn.execute(
-                "SELECT ip_address, mac_address, hostname, rx_bytes, tx_bytes "
-                "FROM ip_bandwidth_data WHERE router_id=? AND timestamp>=? "
-                "ORDER BY ip_address, timestamp",
-                (router_id, threshold),
-            ).fetchall()
-
-            per_ip = {}
-            for row in rows:
-                ip = row["ip_address"]
-                entry = per_ip.setdefault(ip, {
-                    "mac_address": row["mac_address"],
-                    "hostname": row["hostname"],
-                    "rx_bytes": 0,
-                    "tx_bytes": 0,
-                    "last_rx": None,
-                    "last_tx": None,
-                })
-                if entry["last_rx"] is not None and row["rx_bytes"] is not None:
-                    entry["rx_bytes"] += max(0, row["rx_bytes"] - entry["last_rx"])
-                if entry["last_tx"] is not None and row["tx_bytes"] is not None:
-                    entry["tx_bytes"] += max(0, row["tx_bytes"] - entry["last_tx"])
-                entry["last_rx"] = row["rx_bytes"]
-                entry["last_tx"] = row["tx_bytes"]
-
-            stats[name] = {
-                ip: {
-                    "mac_address": entry["mac_address"],
-                    "hostname": entry["hostname"],
-                    "rx_bytes": entry["rx_bytes"],
-                    "tx_bytes": entry["tx_bytes"],
-                    "rx_mb": entry["rx_bytes"] / 1048576,
-                    "tx_mb": entry["tx_bytes"] / 1048576,
-                }
-                for ip, entry in sorted(
-                    per_ip.items(),
-                    key=lambda item: item[1]["rx_bytes"] + item[1]["tx_bytes"],
-                    reverse=True,
-                )
-            }
-    finally:
-        conn.close()
-    return stats
-
-
-def get_interface_bandwidth_stats(router_id, time_periods):
-    """Return per-interface traffic totals (bytes transferred) for the periods."""
-    stats = {}
-    conn = db.get_connection()
-    try:
-        for name in time_periods:
-            minutes = _PERIODS_MINUTES.get(name)
-            if minutes is None:
-                continue
-            threshold = datetime.datetime.now() - datetime.timedelta(minutes=minutes)
-            rows = conn.execute(
-                "SELECT interface_name, rx_bytes, tx_bytes FROM interface_bandwidth_data "
-                "WHERE router_id=? AND timestamp>=? ORDER BY interface_name, timestamp",
-                (router_id, threshold),
-            ).fetchall()
-
-            per_interface = {}
-            for row in rows:
-                interface = row["interface_name"]
-                entry = per_interface.setdefault(interface, {
-                    "rx_bytes": 0, "tx_bytes": 0, "last_rx": None, "last_tx": None,
-                })
-                if entry["last_rx"] is not None and row["rx_bytes"] is not None:
-                    entry["rx_bytes"] += max(0, row["rx_bytes"] - entry["last_rx"])
-                if entry["last_tx"] is not None and row["tx_bytes"] is not None:
-                    entry["tx_bytes"] += max(0, row["tx_bytes"] - entry["last_tx"])
-                entry["last_rx"] = row["rx_bytes"]
-                entry["last_tx"] = row["tx_bytes"]
-
-            stats[name] = {
-                interface: {
-                    "rx_bytes": entry["rx_bytes"],
-                    "tx_bytes": entry["tx_bytes"],
-                    "rx_mb": entry["rx_bytes"] / 1048576,
-                    "tx_mb": entry["tx_bytes"] / 1048576,
-                }
-                for interface, entry in sorted(
-                    per_interface.items(),
-                    key=lambda item: item[1]["rx_bytes"] + item[1]["tx_bytes"],
-                    reverse=True,
-                )
-            }
-    finally:
-        conn.close()
-    return stats
-
-
 _HISTORY_PERIODS = {
     "1h": 60, "3h": 180, "6h": 360, "12h": 720,
     "24h": 1440, "3d": 4320, "1w": 10080,
@@ -523,48 +412,519 @@ def get_ip_bandwidth_history(router_id, ip_address, time_period):
         conn.close()
 
 
-def get_interface_bandwidth_data(router_id, time_period):
-    if time_period not in _HISTORY_PERIODS:
-        return {"error": "Invalid period"}
-    threshold = (datetime.datetime.now() - datetime.timedelta(minutes=_HISTORY_PERIODS[time_period])).strftime("%Y-%m-%d %H:%M:%S")
+# ─── Network IPs (merged discovery) ───────────────────────────────────────
+
+NETWORK_IPS_CACHE_TTL = 10  # seconds
+
+# Discovery sources and the badge color used for each in the UI.
+NETWORK_IP_SOURCE_COLORS = {
+    "Router": "green",
+    "ARP": "gray",
+    "DHCP": "cyan",
+    "Neighbor": "blue",
+    "Connection": "amber",
+}
+
+_network_ips_cache = {}
+_network_ips_lock = threading.Lock()
+
+
+def _ip_sort_key(ip):
+    """Numeric sort key for an IP string (IPv4 before IPv6)."""
+    try:
+        return int(ipaddress.ip_address(ip))
+    except ValueError:
+        return 0
+
+
+def get_network_ips(router):
+    """Fetch and merge every IP visible on a router's network.
+
+    Sources (each queried independently — one failing source is recorded in
+    ``missing_sources`` and never breaks the others):
+      /ip/address (router's own), /ip/arp, /ip/neighbor (MNDP),
+      /ip/firewall/connection (active traffic), /ip/dhcp-server/lease
+      (hostnames), /interface (interface mapping).
+
+    The merged result is cached server-side for NETWORK_IPS_CACHE_TTL seconds.
+
+    Each record carries a ``group`` field ("local" | "external"). Local means
+    the IP is inside one of the router's own /ip/address subnets or an internal
+    range (RFC1918/loopback/CGNAT/link-local); everything else is external.
+    Non-host placeholders (0.0.0.0, broadcast, multicast, reserved) are dropped.
+
+    Returns {"records": [...], "missing_sources": [...], "error": str|None}.
+    """
+    router_id = router["id"]
+    if not router.get("username") or not router.get("password"):
+        return {"records": [], "missing_sources": [], "error": "No API credentials configured"}
+
+    with _network_ips_lock:
+        entry = _network_ips_cache.get(router_id)
+        if entry and time.time() - entry[0] < NETWORK_IPS_CACHE_TTL:
+            return entry[1]
+
+    api, connection, error = routeros_client.connect_to_router(
+        router["host"], router["port"], router["username"], router["password"]
+    )
+    if not api:
+        return {"records": [], "missing_sources": [], "error": error or "Connection failed"}
+
+    missing_sources = []
+
+    def fetch(name, path):
+        result = routeros_client.safe_api_call(api, path)
+        if result["error"]:
+            missing_sources.append(name)
+            return []
+        return result["data"] or []
+
+    try:
+        addresses = fetch("address", "/ip/address")
+        arp_entries = fetch("arp", "/ip/arp")
+        neighbors = fetch("neighbor", "/ip/neighbor")
+        connections = fetch("connection", "/ip/firewall/connection")
+        leases = fetch("dhcp_lease", "/ip/dhcp-server/lease")
+        interfaces = fetch("interface", "/interface")
+    finally:
+        if connection:
+            connection.disconnect()
+
+    interface_running = {}
+    for iface in interfaces:
+        name = iface.get("name")
+        if name:
+            interface_running[name] = iface.get("running", "false") == "true"
+
+    merged = {}
+
+    def _record(ip):
+        return merged.setdefault(ip, {
+            "macs": set(),
+            "hostname": "",
+            "interfaces": set(),
+            "sources": set(),
+        })
+
+    def _set_hostname(rec, candidate):
+        if candidate and not rec["hostname"]:
+            rec["hostname"] = candidate
+
+    # 1) Router's own addresses (also the source of the local subnet list)
+    local_subnets = set()
+    for entry in addresses:
+        addr_field = entry.get("address") or ""
+        ip = addr_field.split("/")[0]
+        if not ip:
+            continue
+        if "/" in addr_field:
+            try:
+                local_subnets.add(ipaddress.ip_network(addr_field, strict=False))
+            except ValueError:
+                pass
+        rec = _record(ip)
+        rec["sources"].add("Router")
+        if entry.get("interface"):
+            rec["interfaces"].add(entry["interface"])
+
+    # 2) ARP table
+    for entry in arp_entries:
+        ip = entry.get("address")
+        if not ip:
+            continue
+        rec = _record(ip)
+        rec["sources"].add("ARP")
+        if entry.get("mac-address"):
+            rec["macs"].add(entry["mac-address"])
+        if entry.get("interface"):
+            rec["interfaces"].add(entry["interface"])
+        _set_hostname(rec, entry.get("host-name"))
+
+    # 3) Neighbors (MNDP / LLDP discovery)
+    for entry in neighbors:
+        ip = entry.get("address")
+        if not ip:
+            continue
+        rec = _record(ip)
+        rec["sources"].add("Neighbor")
+        if entry.get("mac-address"):
+            rec["macs"].add(entry["mac-address"])
+        if entry.get("interface"):
+            rec["interfaces"].add(entry["interface"])
+        _set_hostname(rec, entry.get("identity"))
+
+    # 4) Active connections (internal IPs generating traffic)
+    for entry in connections:
+        for field in ("src-address", "dst-address"):
+            ip = (entry.get(field) or "").split(":")[0]
+            if ip and utils.is_internal_ip(ip):
+                _record(ip)["sources"].add("Connection")
+
+    # 5) DHCP leases (hostnames come mostly from here)
+    lease_status = {}
+    for entry in leases:
+        ip = entry.get("address")
+        if not ip:
+            continue
+        rec = _record(ip)
+        rec["sources"].add("DHCP")
+        if entry.get("mac-address"):
+            rec["macs"].add(entry["mac-address"])
+        _set_hostname(rec, entry.get("host-name"))
+        if entry.get("status"):
+            lease_status[ip] = entry["status"]
+
+    # Derive a display status + badge color per merged IP, and classify each as
+    # local or external (0.0.0.0 / broadcast / multicast are dropped).
+    records = []
+    for ip, rec in merged.items():
+        group = utils.classify_ip(ip, local_subnets)
+        if group == "other":
+            continue
+        if "Router" in rec["sources"]:
+            if any(not interface_running.get(i, True) for i in rec["interfaces"]):
+                status, color = "Down", "red"
+            else:
+                status, color = "Router", "cyan"
+        elif "Connection" in rec["sources"]:
+            status, color = "Active", "green"
+        elif "DHCP" in rec["sources"] and lease_status.get(ip) == "bound":
+            status, color = "Active", "green"
+        elif "Neighbor" in rec["sources"]:
+            status, color = "Neighbor", "blue"
+        elif "ARP" in rec["sources"]:
+            status, color = "Reachable", "green"
+        elif "DHCP" in rec["sources"]:
+            status, color = (lease_status.get(ip) or "dhcp").title(), "amber"
+        else:
+            status, color = "Unknown", "gray"
+        records.append({
+            "ip": ip,
+            "mac": ", ".join(sorted(rec["macs"])) or "-",
+            "hostname": rec["hostname"] or "-",
+            "interface": ", ".join(sorted(rec["interfaces"])) or "-",
+            "sources": sorted(rec["sources"]),
+            "status": status,
+            "status_color": color,
+            "group": group,
+        })
+
+    records.sort(key=lambda r: _ip_sort_key(r["ip"]))
+
+    result = {"records": records, "missing_sources": missing_sources, "error": None}
+    with _network_ips_lock:
+        _network_ips_cache[router_id] = (time.time(), result)
+    return result
+
+
+# ─── Interface traffic (live rates + cumulative totals) ──────────────────
+
+INTERFACE_TRAFFIC_CACHE_TTL = 3  # seconds — short: live rates must stay fresh
+
+_interface_traffic_cache = {}
+_interface_traffic_lock = threading.Lock()
+
+
+def get_interface_traffic(router_id):
+    """Live rx/tx rates + cumulative totals for every interface.
+
+    Live rates come from ``/interface monitor-traffic`` (once, all interfaces);
+    cumulative totals prefer the latest ``interface_bandwidth_data`` sample
+    (written by the bandwidth collector) and fall back to the ``/interface``
+    rx-byte/tx-byte counters. The result is cached for a short TTL because the
+    rates go stale in seconds.
+
+    Returns {"interfaces": [{name, type, running, rx_rate_bps, tx_rate_bps,
+    rx_total_bytes, tx_total_bytes}], "error": str|None}.
+    """
+    router = get_router(router_id)
+    if not router:
+        return {"interfaces": [], "error": "Router not found"}
+
+    if not router.get("username") or not router.get("password"):
+        return {"interfaces": [], "error": "No API credentials configured"}
+
+    with _interface_traffic_lock:
+        entry = _interface_traffic_cache.get(router_id)
+        if entry and time.time() - entry[0] < INTERFACE_TRAFFIC_CACHE_TTL:
+            return entry[1]
+
+    api, connection, error = routeros_client.connect_to_router(
+        router["host"], router["port"], router["username"], router["password"]
+    )
+    if not api:
+        return {"interfaces": [], "error": error or "Connection failed"}
+
+    try:
+        interfaces_result = routeros_client.safe_api_call(api, "/interface")
+        monitor_result = routeros_client.safe_api_call_command(
+            api, "/interface", "monitor-traffic", {"once": "yes"}
+        )
+    finally:
+        if connection:
+            connection.disconnect()
+
+    interfaces = interfaces_result["data"] or []
+    monitor_items = monitor_result.get("data") or []
+    if isinstance(monitor_items, dict):
+        monitor_items = [monitor_items]
+    monitor_rates = {}
+    for item in monitor_items:
+        name = item.get("name")
+        if name:
+            monitor_rates[name] = item
+
+    # Cumulative totals: prefer the collector's latest sample, else live counters.
+    totals = {}
+    conn = db.get_connection()
+    try:
+        latest = conn.execute(
+            "SELECT MAX(timestamp) FROM interface_bandwidth_data WHERE router_id=?",
+            (router_id,),
+        ).fetchone()
+        if latest and latest[0]:
+            rows = conn.execute(
+                "SELECT interface_name, rx_bytes, tx_bytes FROM interface_bandwidth_data "
+                "WHERE router_id=? AND timestamp=?",
+                (router_id, latest[0]),
+            ).fetchall()
+            for row in rows:
+                totals[row["interface_name"]] = (row["rx_bytes"] or 0, row["tx_bytes"] or 0)
+    finally:
+        conn.close()
+
+    result = []
+    for iface in interfaces:
+        name = iface.get("name")
+        if not name:
+            continue
+        running = str(iface.get("running", "")).lower() == "true"
+        iface_type = iface.get("type", "")
+        mon = monitor_rates.get(name, {})
+        rx_rate = _as_int(mon.get("rx-bits-per-second", 0))
+        tx_rate = _as_int(mon.get("tx-bits-per-second", 0))
+        if name in totals:
+            rx_total, tx_total = totals[name]
+        else:
+            rx_total = _as_int(iface.get("rx-byte", 0))
+            tx_total = _as_int(iface.get("tx-byte", 0))
+        result.append({
+            "name": name,
+            "type": iface_type,
+            "running": running,
+            "rx_rate_bps": rx_rate,
+            "tx_rate_bps": tx_rate,
+            "rx_total_bytes": rx_total,
+            "tx_total_bytes": tx_total,
+        })
+
+    response = {"interfaces": result, "error": None}
+    with _interface_traffic_lock:
+        _interface_traffic_cache[router_id] = (time.time(), response)
+    return response
+
+
+# ─── IP details (per-IP traffic + live connections) ──────────────────────
+
+IP_DETAILS_CACHE_TTL = 10  # seconds (matches NETWORK_IPS_CACHE_TTL)
+
+_ip_details_cache = {}
+_ip_details_lock = threading.Lock()
+
+
+def get_ip_traffic_totals(router_id, ip_address):
+    """Historical upload/download totals for one IP from ip_bandwidth_data.
+
+    Byte counters are cumulative per sample (written by the bandwidth
+    collector every 60s), so the totals are the sum of positive deltas between
+    consecutive samples (robust to counter resets). Dropped bytes and packet
+    counts are not collected by the bandwidth collector, so the caller treats
+    them as unavailable.
+    """
     conn = db.get_connection()
     try:
         rows = conn.execute(
-            "SELECT interface_name, timestamp, rx_bytes, tx_bytes FROM interface_bandwidth_data "
-            "WHERE router_id=? AND timestamp>=? ORDER BY interface_name, timestamp",
-            (router_id, threshold),
+            "SELECT rx_bytes, tx_bytes, timestamp FROM ip_bandwidth_data "
+            "WHERE router_id=? AND ip_address=? ORDER BY timestamp",
+            (router_id, ip_address),
         ).fetchall()
-        groups = {}
+        if not rows:
+            return {
+                "upload_bytes": 0, "download_bytes": 0, "sample_count": 0,
+                "first_ts": None, "last_ts": None, "has_data": False,
+            }
+        upload = download = 0
+        prev_rx = prev_tx = 0
+        first = True
         for row in rows:
-            groups.setdefault(row["interface_name"], []).append((row["timestamp"], row["rx_bytes"], row["tx_bytes"]))
-
-        result = {}
-        for interface, points in groups.items():
-            data = []
-            for index, (ts, rx, tx) in enumerate(points):
-                if index == 0:
-                    download = upload = 0
-                else:
-                    previous = datetime.datetime.strptime(points[index - 1][0], "%Y-%m-%d %H:%M:%S")
-                    current = datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
-                    diff = (current - previous).total_seconds()
-                    if diff > 0:
-                        delta_rx = max(0, (rx or 0) - (points[index - 1][1] or 0))
-                        delta_tx = max(0, (tx or 0) - (points[index - 1][2] or 0))
-                        download = (delta_rx * 8) / diff / 1000000
-                        upload = (delta_tx * 8) / diff / 1000000
-                    else:
-                        download = upload = 0
-                data.append({
-                    "timestamp": ts,
-                    "download_mbps": download,
-                    "upload_mbps": upload,
-                    "total_mbps": download + upload,
-                })
-            result[interface] = data
-        return result
+            rx = row["rx_bytes"] or 0
+            tx = row["tx_bytes"] or 0
+            if not first:
+                upload += max(0, tx - prev_tx)
+                download += max(0, rx - prev_rx)
+            prev_rx, prev_tx = rx, tx
+            first = False
+        return {
+            "upload_bytes": upload, "download_bytes": download,
+            "sample_count": len(rows),
+            "first_ts": rows[0]["timestamp"], "last_ts": rows[-1]["timestamp"],
+            "has_data": True,
+        }
     finally:
         conn.close()
+
+
+def get_ip_header(router, ip_address):
+    """Resolve hostname/MAC/interface/status for a single IP.
+
+    Preferred source is the merged network-IP result (10s cached); falls back
+    to the latest ip_bandwidth_data sample when the IP is not in the network
+    list (e.g. the router was reachable earlier but is offline now).
+    """
+    result = get_network_ips(router)
+    for rec in result.get("records", []):
+        if rec["ip"] == ip_address:
+            return {
+                "ip": ip_address, "mac": rec["mac"], "hostname": rec["hostname"],
+                "interface": rec["interface"], "status": rec["status"],
+                "status_color": rec["status_color"], "found": True,
+            }
+    conn = db.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT mac_address, hostname FROM ip_bandwidth_data "
+            "WHERE router_id=? AND ip_address=? ORDER BY timestamp DESC LIMIT 1",
+            (router["id"], ip_address),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row:
+        return {
+            "ip": ip_address, "mac": row["mac_address"] or "-",
+            "hostname": row["hostname"] or "-", "interface": "-",
+            "status": "Unknown", "status_color": "gray", "found": True,
+        }
+    return {
+        "ip": ip_address, "mac": "-", "hostname": "-", "interface": "-",
+        "status": "Unknown", "status_color": "gray", "found": False,
+    }
+
+
+def _connection_ip(address):
+    """Return the bare IP from a RouterOS 'addr[:port]' string (v4 and v6)."""
+    address = str(address or "").strip()
+    if not address:
+        return ""
+    if address.startswith("["):  # '[ipv6]:port' or '[ipv6]'
+        end = address.find("]")
+        return address[1:end] if end != -1 else address[1:]
+    if ":" in address and "." in address:  # 'ipv4:port'
+        return address.split(":", 1)[0]
+    return address
+
+
+def get_ip_connections_details(router_id, ip_address):
+    """Live /ip/firewall/connection data filtered to a single IP.
+
+    Derives three views: destinations (remote IPs + volume), ports/services
+    (remote port + service + volume) and the raw connection entries. Volumes
+    are live/estimated — connection tracking counts bytes since the
+    connection was created, not a historical record. Cached in-process for
+    IP_DETAILS_CACHE_TTL seconds.
+
+    Returns {"destinations": [...], "ports": [...], "connections": [...],
+             "error": str|None, "estimated": True}.
+    """
+    cache_key = (router_id, ip_address)
+    with _ip_details_lock:
+        entry = _ip_details_cache.get(cache_key)
+        if entry and time.time() - entry[0] < IP_DETAILS_CACHE_TTL:
+            return entry[1]
+
+    router = get_router(router_id)
+    if not router:
+        return {"destinations": [], "ports": [], "connections": [], "error": "Router not found", "estimated": True}
+
+    if not router.get("username") or not router.get("password"):
+        return {"destinations": [], "ports": [], "connections": [], "error": "No API credentials configured", "estimated": True}
+
+    api, connection, error = routeros_client.connect_to_router(
+        router["host"], router["port"], router["username"], router["password"]
+    )
+    if not api:
+        return {"destinations": [], "ports": [], "connections": [], "error": error or "Connection failed", "estimated": True}
+
+    try:
+        raw = routeros_client.safe_api_call(api, "/ip/firewall/connection")["data"] or []
+    finally:
+        if connection:
+            connection.disconnect()
+
+    destinations = {}
+    ports = {}
+    connections = []
+
+    for item in raw:
+        src = _connection_ip(item.get("src-address", ""))
+        dst = _connection_ip(item.get("dst-address", ""))
+        if src != ip_address and dst != ip_address:
+            continue
+
+        proto = str(item.get("protocol", "")).lower()
+        orig, repl = _connection_upload_download(item)
+        state = item.get("tcp-state", "")
+        src_port = str(item.get("src-port", "") or "")
+        dst_port = str(item.get("dst-port", "") or "")
+
+        if src == ip_address:
+            remote = dst
+            remote_port = dst_port
+            upload, download = orig, repl
+        else:
+            remote = src
+            remote_port = src_port
+            upload, download = repl, orig
+
+        total = upload + download
+
+        dest = destinations.setdefault(remote, {
+            "ip": remote, "upload_bytes": 0, "download_bytes": 0,
+            "total_bytes": 0, "count": 0,
+        })
+        dest["upload_bytes"] += upload
+        dest["download_bytes"] += download
+        dest["total_bytes"] += total
+        dest["count"] += 1
+
+        port_key = (remote_port or "0", proto)
+        port = ports.setdefault(port_key, {
+            "port": remote_port or "0", "protocol": proto,
+            "service": utils.get_service_name(remote_port, proto),
+            "bytes": 0, "count": 0,
+        })
+        port["bytes"] += total
+        port["count"] += 1
+
+        connections.append({
+            "protocol": proto,
+            "src_ip": src, "src_port": src_port,
+            "dst_ip": dst, "dst_port": dst_port,
+            "state": state,
+            "upload_bytes": upload, "download_bytes": download,
+            "total_bytes": total,
+        })
+
+    destinations = sorted(destinations.values(), key=lambda d: d["total_bytes"], reverse=True)
+    ports = sorted(ports.values(), key=lambda p: p["bytes"], reverse=True)
+    connections = sorted(connections, key=lambda c: c["total_bytes"], reverse=True)
+
+    result = {
+        "destinations": destinations, "ports": ports, "connections": connections,
+        "error": None, "estimated": True,
+    }
+    with _ip_details_lock:
+        _ip_details_cache[cache_key] = (time.time(), result)
+    return result
 
 
 # ─── Live firewall connections ────────────────────────────────────────────
@@ -677,72 +1037,6 @@ def get_live_firewall_connections(router_id):
             "total_upload": 0, "total_download": 0,
             "total_upload_human": "0 B", "total_download_human": "0 B",
         }
-    finally:
-        connection.disconnect()
-
-
-def get_router_connections(router_id):
-    router = get_router(router_id)
-    if not router:
-        return {"error": "Not found"}
-
-    api, connection, error = routeros_client.connect_to_router(
-        router["host"], router["port"], router["username"], router["password"]
-    )
-    if not api:
-        return {"error": error or "Failed to connect"}
-
-    try:
-        ip_data = routeros_client.safe_api_call(api, "/ip/address")["data"] or []
-        leases_data = routeros_client.safe_api_call(api, "/ip/dhcp-server/lease")["data"] or []
-        arp_data = routeros_client.safe_api_call(api, "/ip/arp")["data"] or []
-        routes_data = routeros_client.safe_api_call(api, "/ip/route")["data"] or []
-        interfaces_data = routeros_client.safe_api_call(api, "/interface")["data"] or []
-
-        result = []
-        for ip_address in ip_data:
-            address = ip_address.get("address", "")
-            interface = ip_address.get("interface", "")
-            if not address or not interface:
-                continue
-            ip = address.split("/")[0]
-            if ip.startswith("127.") or ip.startswith("169.254."):
-                continue
-
-            clients = []
-            for lease in leases_data:
-                if lease.get("address") and lease.get("server") == ip:
-                    arp_match = next((a for a in arp_data if a.get("address") == lease["address"]), None)
-                    clients.append({
-                        "ip": lease["address"],
-                        "mac": lease.get("mac-address", ""),
-                        "hostname": lease.get("host-name", ""),
-                        "status": lease.get("status", "unknown"),
-                        "interface": arp_match.get("interface", "") if arp_match else "",
-                        "dynamic": arp_match.get("dynamic", False) if arp_match else False,
-                    })
-
-            upstream = None
-            for route in routes_data:
-                if route.get("dst-address") == "0.0.0.0/0" and route.get("interface") == interface:
-                    upstream = {"gateway": route.get("gateway", ""), "interface": route.get("interface", ""), "type": "default_route"}
-                    break
-            if not upstream:
-                for interface_item in interfaces_data:
-                    if interface_item.get("name") == interface and interface_item.get("master-port"):
-                        upstream = {"gateway": "N/A", "interface": interface_item["master-port"], "type": "bridge_parent"}
-                        break
-            if not upstream:
-                upstream = {"gateway": "Direct to WAN", "interface": interface, "type": "direct"}
-
-            result.append({
-                "ip": ip, "interface": interface, "network": address,
-                "clients": clients, "client_count": len(clients), "upstream": upstream,
-            })
-        return result
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Connections error: %s", exc)
-        return {"error": str(exc)}
     finally:
         connection.disconnect()
 

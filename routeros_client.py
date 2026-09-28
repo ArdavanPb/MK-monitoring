@@ -68,6 +68,25 @@ def safe_api_call(api, resource_path):
         return {"data": None, "error": str(exc)}
 
 
+def safe_api_call_command(api, resource_path, command, arguments=None):
+    """Run a RouterOS API command (e.g. 'monitor-traffic') returning {'data', 'error'}."""
+    try:
+        resource = api.get_resource(resource_path)
+        result = resource.call(command, arguments or {})
+        if result is None:
+            return {"data": None, "error": f"{resource_path} {command} returned None"}
+        return {"data": result, "error": None}
+    except RouterOsApiConnectionError as exc:
+        logger.warning("API %s %s connection error: %s", resource_path, command, exc)
+        return {"data": None, "error": f"Connection error: {exc}"}
+    except RouterOsApiError as exc:
+        logger.warning("API %s %s rejected: %s", resource_path, command, exc)
+        return {"data": None, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        logger.error("API %s %s error: %s\n%s", resource_path, command, exc, traceback.format_exc())
+        return {"data": None, "error": str(exc)}
+
+
 def safe_api_call_single(api, resource_path):
     """Call an API resource and return its first item as a dict."""
     result = safe_api_call(api, resource_path)

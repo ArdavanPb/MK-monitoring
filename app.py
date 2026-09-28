@@ -459,26 +459,20 @@ def _register_routes(app):
 
     # ─── Monitoring ───────────────────────────────────────────────────────
 
-    TIME_PERIODS = [
-        ("1m", "1 min"), ("5m", "5 min"), ("15m", "15 min"), ("30m", "30 min"),
-        ("1h", "1 hour"), ("3h", "3 hours"), ("6h", "6 hours"), ("12h", "12 hours"),
-        ("24h", "24 hours"), ("3d", "3 days"), ("1w", "1 week"),
-    ]
-
-    def render_monitor(router, rd, info, bandwidth_stats, log_stats, period, alerts, backups, mode, source_type, source_port, source_label, selected_tab="system", interface_bandwidth_stats=None):
+    def render_monitor(router, rd, info, log_stats, alerts, backups, source_type, source_port, source_label, selected_tab="system", network_ips=None):
         return render_template(
-            "monitor.html", router=rd, info=info, bandwidth_stats=bandwidth_stats,
-            interface_bandwidth_stats=interface_bandwidth_stats or {},
-            log_stats=log_stats, selected_period=period, time_periods=TIME_PERIODS,
+            "monitor.html", router=rd, info=info,
+            log_stats=log_stats,
             alerts=alerts, backups=backups, now=datetime.now(),
-            connection_mode=mode, source_type=source_type, source_port=source_port,
+            source_type=source_type, source_port=source_port,
             source_label=source_label, selected_tab=selected_tab,
+            network_ips=network_ips or {"records": [], "missing_sources": [], "error": None},
+            source_colors=services.NETWORK_IP_SOURCE_COLORS,
         )
 
     @app.route("/monitor_router/<int:router_id>")
     @login_required
     def monitor_router(router_id):
-        period = request.args.get("period", "1h")
         selected_tab = request.args.get("tab", "system")
         router = services.get_router(router_id)
         if not router:
@@ -491,16 +485,15 @@ def _register_routes(app):
         }
         alerts = services.get_alerts(router_id, 50)
         empty_stats = {"total": 0, "categories": {}, "severities": {}}
-        interface_bandwidth = services.get_interface_bandwidth_stats(router_id, [period])
 
         if router.get("snmp_enabled"):
             si = services.get_snmp_detailed_info(router)
             src_info = si.get("_source", {})
             has_data = si["resources"].get("cpu_load") and si["resources"]["cpu_load"] != "N/A"
             if has_data:
-                return render_monitor(router, rd, si, {}, empty_stats, period, alerts, [], "snmp", "SNMP", src_info.get("port", 161), "SNMP", selected_tab, interface_bandwidth)
+                return render_monitor(router, rd, si, empty_stats, alerts, [], "SNMP", src_info.get("port", 161), "SNMP", selected_tab)
             if not router.get("username") or not router.get("password"):
-                return render_monitor(router, rd, si, {}, empty_stats, period, alerts, [], "snmp", "SNMP", src_info.get("port", 161), "SNMP", selected_tab, interface_bandwidth)
+                return render_monitor(router, rd, si, empty_stats, alerts, [], "SNMP", src_info.get("port", 161), "SNMP", selected_tab)
 
         if not router.get("username") or not router.get("password"):
             return render_template("error.html", error="No connection method configured"), 200
@@ -517,81 +510,74 @@ def _register_routes(app):
         finally:
             connection.disconnect()
 
-        bandwidth = services.get_ip_bandwidth_stats(router_id, [period])
+        network_ips = services.get_network_ips(router)
         backups = services.get_backup_list(router_id)
-        return render_monitor(router, rd, detailed, bandwidth, log_stats, period, alerts, backups, "api", "API", router["port"], "API", selected_tab, interface_bandwidth)
+        return render_monitor(router, rd, detailed, log_stats, alerts, backups, "API", router["port"], "API", selected_tab, network_ips)
 
-    @app.route("/api/monitor/<int:router_id>")
+    @app.route("/api/network-ips/<int:router_id>")
     @login_required
-    def api_monitor_router(router_id):
-        period = request.args.get("period", "1h")
+    def api_network_ips(router_id):
         router = services.get_router(router_id)
         if not router:
             return jsonify({"success": False, "error": "Router not found"}), 404
+        data = services.get_network_ips(router)
+        return jsonify({"success": True, "data": data})
 
-        api, connection, error = routeros_client.connect_to_router(
-            router["host"], router["port"], router["username"], router["password"]
-        )
-        if not api:
-            return jsonify({"success": False, "error": error}), 500
-
-        try:
-            system_info = routeros_client.get_router_info(api)
-            detailed = routeros_client.get_detailed_router_info(api)
-            bandwidth = services.get_ip_bandwidth_stats(router_id, [period])
-            result = {
-                "success": True,
-                "data": {
-                    "system_info": system_info,
-                    "tables": {
-                        "ip_addresses": detailed.get("ip_addresses", []),
-                        "dhcp_leases": detailed.get("dhcp_leases", []),
-                        "arp_table": detailed.get("arp_table", []),
-                        "interfaces": detailed.get("interfaces", []),
-                        "resources": detailed.get("resources", {}),
-                        "clock": detailed.get("clock", {}),
-                        "health": detailed.get("health", {}),
-                        "license": detailed.get("license", {}),
-                    },
-                    "bandwidth_stats": bandwidth,
-                },
-            }
-            if detailed.get("api_errors"):
-                result["warnings"] = {"api_errors": detailed["api_errors"]}
-            return jsonify(result)
-        except Exception as exc:  # noqa: BLE001
-            logger.error("api_monitor error: %s", exc)
-            return jsonify({"success": False, "error": str(exc)}), 500
-        finally:
-            connection.disconnect()
-
-    @app.route("/api/debug/<int:router_id>")
+    @app.route("/api/interface-traffic/<int:router_id>")
     @login_required
-    def api_debug(router_id):
+    def api_interface_traffic(router_id):
         router = services.get_router(router_id)
         if not router:
-            return jsonify({"success": False, "error": "Not found"}), 404
+            return jsonify({"success": False, "error": "Router not found"}), 404
+        data = services.get_interface_traffic(router_id)
+        return jsonify({"success": True, "data": data})
 
-        api, connection, error = routeros_client.connect_to_router(
-            router["host"], router["port"], router["username"], router["password"]
+    # ─── IP details (per-IP traffic & live connections) ──────────────────
+
+    @app.route("/monitor_router/<int:router_id>/ip/<ip>")
+    @login_required
+    def ip_details(router_id, ip):
+        if not utils.is_valid_ip(ip):
+            return render_template("error.html", error="Invalid IP address"), 400
+        router = services.get_router(router_id)
+        if not router:
+            flash("Router not found", "error")
+            return redirect(url_for("index"))
+        rd = {
+            "id": router["id"], "name": router["name"], "host": router["host"],
+            "port": router["port"], "snmp_enabled": router.get("snmp_enabled", 0),
+        }
+        header = services.get_ip_header(router, ip)
+        totals = services.get_ip_traffic_totals(router_id, ip)
+        return render_template(
+            "ip_details.html", router=rd, ip=ip, header=header, totals=totals,
+            history_periods=services._HISTORY_PERIODS,
         )
-        if not api:
-            return jsonify({"success": False, "error": error}), 500
 
-        try:
-            debug = {}
-            paths = [
-                "/system/resource", "/system/identity", "/interface", "/ip/address",
-                "/ip/dhcp-server/lease", "/ip/arp", "/system/clock",
-                "/system/health", "/system/license", "/log",
-            ]
-            for path in paths:
-                result = routeros_client.safe_api_call(api, path)
-                data = result["data"] if result["data"] is not None else []
-                debug[path] = data[:5] if len(data) > 5 else data
-            return jsonify({"success": True, "data": debug})
-        finally:
-            connection.disconnect()
+    @app.route("/api/ip/<int:router_id>/<ip>/history")
+    @login_required
+    def api_ip_history(router_id, ip):
+        if not utils.is_valid_ip(ip):
+            return jsonify({"success": False, "error": "Invalid IP address"}), 400
+        router = services.get_router(router_id)
+        if not router:
+            return jsonify({"success": False, "error": "Router not found"}), 404
+        period = request.args.get("period", "1h")
+        result = services.get_ip_bandwidth_history(router_id, ip, period)
+        if isinstance(result, dict) and result.get("error"):
+            return jsonify({"success": False, "error": result["error"]}), 400
+        return jsonify({"success": True, "data": {"points": result, "period": period}})
+
+    @app.route("/api/ip/<int:router_id>/<ip>/connections")
+    @login_required
+    def api_ip_connections(router_id, ip):
+        if not utils.is_valid_ip(ip):
+            return jsonify({"success": False, "error": "Invalid IP address"}), 400
+        router = services.get_router(router_id)
+        if not router:
+            return jsonify({"success": False, "error": "Router not found"}), 404
+        data = services.get_ip_connections_details(router_id, ip)
+        return jsonify({"success": True, "data": data})
 
     # ─── Backups ──────────────────────────────────────────────────────────
 
@@ -619,11 +605,6 @@ def _register_routes(app):
         )
 
     # ─── Alerts ───────────────────────────────────────────────────────────
-
-    @app.route("/api/alerts/<int:router_id>")
-    @login_required
-    def api_alerts(router_id):
-        return jsonify({"success": True, "data": services.get_alerts(router_id, 100)})
 
     @app.route("/api/alerts/acknowledge/<int:alert_id>", methods=["POST"])
     @login_required
@@ -752,50 +733,7 @@ def _register_routes(app):
             current_severity=severity, current_search=search,
         )
 
-    # ─── Charts ───────────────────────────────────────────────────────────
-
-    @app.route("/api/chart/bandwidth/<int:router_id>")
-    @login_required
-    def api_chart_bandwidth(router_id):
-        ip = request.args.get("ip")
-        period = request.args.get("period", "1h")
-        if not ip:
-            return jsonify({"success": False, "error": "IP required"}), 400
-        try:
-            data = services.get_ip_bandwidth_history(router_id, ip, period)
-            if isinstance(data, dict) and "error" in data:
-                return jsonify({"success": False, "error": data["error"]}), 400
-            return jsonify({"success": True, "data": data, "ip_address": ip, "time_period": period})
-        except Exception as exc:  # noqa: BLE001
-            return jsonify({"success": False, "error": str(exc)}), 500
-
-    @app.route("/api/chart/interface_bandwidth/<int:router_id>")
-    @login_required
-    def api_chart_interface_bandwidth(router_id):
-        interface = request.args.get("interface")
-        period = request.args.get("period", "1h")
-        if not interface:
-            return jsonify({"success": False, "error": "Interface required"}), 400
-        try:
-            data = services.get_interface_bandwidth_data(router_id, period)
-            if isinstance(data, dict) and "error" in data:
-                return jsonify({"success": False, "error": data["error"]}), 400
-            return jsonify({"success": True, "data": data.get(interface, []), "interface_name": interface, "time_period": period})
-        except Exception as exc:  # noqa: BLE001
-            return jsonify({"success": False, "error": str(exc)}), 500
-
     # ─── Network connections ──────────────────────────────────────────────
-
-    @app.route("/api/network-connections/<int:router_id>")
-    @login_required
-    def api_router_network_connections(router_id):
-        try:
-            data = services.get_router_connections(router_id)
-            if "error" in data:
-                return jsonify({"success": False, "error": data["error"]}), 500
-            return jsonify({"success": True, "data": data, "timestamp": datetime.now().isoformat()})
-        except Exception as exc:  # noqa: BLE001
-            return jsonify({"success": False, "error": str(exc)}), 500
 
     @app.route("/connections/<int:router_id>")
     @login_required

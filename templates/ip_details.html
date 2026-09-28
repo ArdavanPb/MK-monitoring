@@ -1,0 +1,330 @@
+{% extends "base.html" %}
+
+{% block title %}{{ ip }} &middot; {{ router.name }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">
+            <span class="text-mono">{{ ip }}</span>
+            <span class="badge-soft {{ header.status_color }} ms-2">{{ header.status }}</span>
+        </h1>
+        <p class="page-subtitle">
+            <a href="{{ url_for('monitor_router', router_id=router.id) }}" class="text-decoration-none">{{ router.name }}</a>
+            &middot;
+            <span class="text-muted">Hostname:</span> {{ header.hostname }}
+            &middot;
+            <span class="text-muted">MAC:</span> <code>{{ header.mac }}</code>
+            &middot;
+            <span class="text-muted">Interface:</span> {{ header.interface }}
+        </p>
+    </div>
+    <div class="page-actions">
+        <a href="{{ url_for('monitor_router', router_id=router.id, tab='addresses') }}" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left me-1"></i>Back
+        </a>
+    </div>
+</div>
+
+<div class="row g-3 mb-3">
+    <div class="col-md-4">
+        <div class="stat-card">
+            <div class="stat-icon green"><i class="bi bi-arrow-up-circle"></i></div>
+            <div>
+                <div class="stat-value summary-value" data-bytes="{{ totals.upload_bytes }}">{{ totals.upload_bytes|format_bytes }}</div>
+                <div class="stat-label">Upload (outgoing)</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="stat-card">
+            <div class="stat-icon blue"><i class="bi bi-arrow-down-circle"></i></div>
+            <div>
+                <div class="stat-value summary-value" data-bytes="{{ totals.download_bytes }}">{{ totals.download_bytes|format_bytes }}</div>
+                <div class="stat-label">Download (incoming)</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="stat-card">
+            <div class="stat-icon red"><i class="bi bi-x-octagon"></i></div>
+            <div>
+                <div class="stat-value summary-value" data-bytes="">&mdash;</div>
+                <div class="stat-label">Dropped <span class="text-muted fw-normal text-lowercase">(not tracked)</span></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+    <small class="text-muted">
+        {% if totals.has_data %}
+            {{ totals.sample_count }} samples &middot; {{ totals.first_ts }} &rarr; {{ totals.last_ts }}
+        {% else %}
+            No historical traffic data for this IP yet (bandwidth collector may not be running).
+        {% endif %}
+    </small>
+    <div class="btn-group btn-group-sm" role="group" id="unitSelector" aria-label="Unit selector">
+        <button type="button" class="btn btn-outline-secondary active" data-unit="bytes">Bytes</button>
+        <button type="button" class="btn btn-outline-secondary" data-unit="bits">Bits</button>
+        <button type="button" class="btn btn-outline-secondary" data-unit="packets">Packets</button>
+    </div>
+</div>
+
+<div class="app-card mb-3">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5><i class="bi bi-activity me-1"></i>Traffic Rate</h5>
+        <div class="btn-group btn-group-sm" role="group" id="periodSelector" aria-label="Time period">
+            {% for p in history_periods %}
+            <button type="button" class="btn btn-outline-secondary {% if p == '1h' %}active{% endif %}" data-period="{{ p }}">{{ p }}</button>
+            {% endfor %}
+        </div>
+    </div>
+    <div class="card-body">
+        <div id="chartEmpty" class="state-box d-none" style="min-height: 320px;">
+            <div class="state-icon"><i class="bi bi-bar-chart-line"></i></div>
+            <h5>No traffic history</h5>
+            <p id="chartEmptyMsg">No bandwidth history for this IP yet.</p>
+        </div>
+        <div id="chartWrap" style="position: relative; height: 320px;">
+            <canvas id="rateChart"></canvas>
+        </div>
+    </div>
+</div>
+
+<div id="connBanner" class="alert alert-warning d-none" role="alert"></div>
+
+<div class="row g-3">
+    <div class="col-lg-4">
+        <div class="app-card h-100">
+            <div class="card-header"><h5><i class="bi bi-geo-alt me-1"></i>Destinations <span class="badge-soft gray" id="destCount">0</span></h5></div>
+            <div class="card-body p-0">
+                <div class="table-scroll">
+                    <table class="table-app">
+                        <thead><tr><th>IP</th><th class="text-end">Volume</th></tr></thead>
+                        <tbody id="destinationsBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-4">
+        <div class="app-card h-100">
+            <div class="card-header"><h5><i class="bi bi-hdd-network me-1"></i>Services / Ports <span class="badge-soft gray" id="portsCount">0</span></h5></div>
+            <div class="card-body p-0">
+                <div class="table-scroll">
+                    <table class="table-app">
+                        <thead><tr><th>Port</th><th>Service</th><th class="text-end">Volume</th></tr></thead>
+                        <tbody id="portsBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-4">
+        <div class="app-card h-100">
+            <div class="card-header"><h5><i class="bi bi-diagram-3 me-1"></i>Connections <span class="badge-soft gray" id="connCount">0</span></h5></div>
+            <div class="card-body p-0">
+                <div class="table-scroll">
+                    <table class="table-app">
+                        <thead><tr><th>Proto</th><th>Source</th><th>Destination</th><th>State</th><th class="text-end">Volume</th></tr></thead>
+                        <tbody id="connectionsBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+(function () {
+    const ROUTER_ID = {{ router.id }};
+    const IP = {{ ip|tojson }};
+    const MAX_POINTS = 60;
+
+    // ---- formatting / escaping ----
+    function esc(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+    }
+    function humanSize(bytes, asBits) {
+        let value = asBits ? bytes * 8 : bytes;
+        const units = asBits ? ['b', 'Kb', 'Mb', 'Gb', 'Tb'] : ['B', 'KB', 'MB', 'GB', 'TB'];
+        let i = 0;
+        while (value >= 1024 && i < units.length - 1) { value /= 1024; i++; }
+        const fixed = (value >= 100 || i === 0) ? 0 : 1;
+        return value.toFixed(fixed) + ' ' + units[i];
+    }
+
+    // ---- summary unit selector ----
+    let currentUnit = 'bytes';
+    function renderSummary() {
+        document.querySelectorAll('.summary-value').forEach(function (el) {
+            const raw = el.getAttribute('data-bytes');
+            if (raw === null || raw === '') { el.textContent = '\u2014'; return; }
+            const n = parseInt(raw, 10) || 0;
+            if (currentUnit === 'packets') { el.textContent = '\u2014'; return; }
+            el.textContent = humanSize(n, currentUnit === 'bits');
+        });
+    }
+    document.getElementById('unitSelector').addEventListener('click', function (e) {
+        const btn = e.target.closest('button[data-unit]');
+        if (!btn) return;
+        currentUnit = btn.getAttribute('data-unit');
+        document.querySelectorAll('#unitSelector button').forEach(function (b) {
+            b.classList.toggle('active', b === btn);
+        });
+        renderSummary();
+    });
+
+    // ---- traffic rate chart ----
+    let chart = null;
+    let chartPeriod = '1h';
+
+    function initChart() {
+        const ctx = document.getElementById('rateChart').getContext('2d');
+        chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    { label: 'Incoming', borderColor: '#0d6efd', backgroundColor: 'rgba(13,110,253,0.08)', data: [], fill: true, tension: 0.3, borderWidth: 2, pointRadius: 0 },
+                    { label: 'Outgoing', borderColor: '#198754', backgroundColor: 'rgba(25,135,84,0.08)', data: [], fill: true, tension: 0.3, borderWidth: 2, pointRadius: 0 }
+                ]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false, animation: false,
+                interaction: { mode: 'index', intersect: false },
+                scales: {
+                    x: { ticks: { maxTicksLimit: 8, color: '#8a94a6' }, grid: { color: 'rgba(0,0,0,0.04)' } },
+                    y: { title: { display: true, text: 'Mbps' }, beginAtZero: true, ticks: { color: '#8a94a6' }, grid: { color: 'rgba(0,0,0,0.04)' } }
+                },
+                plugins: { legend: { position: 'top', labels: { usePointStyle: true } } }
+            }
+        });
+    }
+
+    function showChartEmpty(msg) {
+        document.getElementById('chartWrap').classList.add('d-none');
+        document.getElementById('chartEmpty').classList.remove('d-none');
+        document.getElementById('chartEmptyMsg').textContent = msg || 'No traffic history for this IP.';
+    }
+    function showChart() {
+        document.getElementById('chartWrap').classList.remove('d-none');
+        document.getElementById('chartEmpty').classList.add('d-none');
+    }
+
+    async function pollHistory() {
+        try {
+            const res = await axios.get('/api/ip/' + ROUTER_ID + '/' + encodeURIComponent(IP) + '/history?period=' + chartPeriod);
+            if (!res.data.success) { showChartEmpty(res.data.error); return; }
+            const points = res.data.data.points || [];
+            if (!points.length) { showChartEmpty('No bandwidth history for this IP yet (collector not running or IP too new).'); return; }
+            let labels = points.map(function (p) { return p.timestamp.slice(11, 16); });
+            let incoming = points.map(function (p) { return p.download_mbps; });
+            let outgoing = points.map(function (p) { return p.upload_mbps; });
+            if (labels.length > MAX_POINTS) {
+                labels = labels.slice(-MAX_POINTS);
+                incoming = incoming.slice(-MAX_POINTS);
+                outgoing = outgoing.slice(-MAX_POINTS);
+            }
+            chart.data.labels = labels;
+            chart.data.datasets[0].data = incoming;
+            chart.data.datasets[1].data = outgoing;
+            chart.update();
+            showChart();
+        } catch (e) {
+            showChartEmpty('Failed to load traffic history.');
+        }
+    }
+
+    document.getElementById('periodSelector').addEventListener('click', function (e) {
+        const btn = e.target.closest('button[data-period]');
+        if (!btn) return;
+        chartPeriod = btn.getAttribute('data-period');
+        document.querySelectorAll('#periodSelector button').forEach(function (b) {
+            b.classList.toggle('active', b === btn);
+        });
+        pollHistory();
+    });
+
+    // ---- live connections / destinations / ports ----
+    function emptyRow(colspan, text) {
+        return '<tr><td colspan="' + colspan + '" class="text-muted text-center py-3">' + esc(text) + '</td></tr>';
+    }
+
+    function renderDestinations(list) {
+        const tbody = document.getElementById('destinationsBody');
+        document.getElementById('destCount').textContent = list.length;
+        if (!list.length) { tbody.innerHTML = emptyRow(2, 'No destinations'); return; }
+        tbody.innerHTML = list.map(function (d) {
+            return '<tr><td><code>' + esc(d.ip) + '</code></td>' +
+                '<td class="text-end"><span class="text-muted">' + humanSize(d.total_bytes) + '</span></td></tr>';
+        }).join('');
+    }
+
+    function renderPorts(list) {
+        const tbody = document.getElementById('portsBody');
+        document.getElementById('portsCount').textContent = list.length;
+        if (!list.length) { tbody.innerHTML = emptyRow(3, 'No ports/services'); return; }
+        tbody.innerHTML = list.map(function (p) {
+            return '<tr><td><code>' + esc(p.port) + '</code></td>' +
+                '<td><span class="badge-soft cyan">' + esc(p.service) + '</span></td>' +
+                '<td class="text-end"><span class="text-muted">' + humanSize(p.bytes) + '</span></td></tr>';
+        }).join('');
+    }
+
+    function renderConnections(list) {
+        const tbody = document.getElementById('connectionsBody');
+        document.getElementById('connCount').textContent = list.length;
+        if (!list.length) { tbody.innerHTML = emptyRow(5, 'No live connections'); return; }
+        tbody.innerHTML = list.map(function (c) {
+            return '<tr><td><span class="badge-soft gray">' + esc(c.protocol) + '</span></td>' +
+                '<td><code>' + esc(c.src_ip) + ':' + esc(c.src_port || '') + '</code></td>' +
+                '<td><code>' + esc(c.dst_ip) + ':' + esc(c.dst_port || '') + '</code></td>' +
+                '<td>' + (c.state ? '<small class="text-muted">' + esc(c.state) + '</small>' : '<span class="text-muted">\u2014</span>') + '</td>' +
+                '<td class="text-end"><span class="text-muted">' + humanSize(c.total_bytes) + '</span></td></tr>';
+        }).join('');
+    }
+
+    function renderConnectionsError(msg) {
+        const banner = document.getElementById('connBanner');
+        banner.textContent = msg || 'Live connection data unavailable (router offline).';
+        banner.classList.remove('d-none');
+        renderDestinations([]);
+        renderPorts([]);
+        renderConnections([]);
+    }
+    function clearConnectionsError() {
+        document.getElementById('connBanner').classList.add('d-none');
+    }
+
+    async function pollConnections() {
+        try {
+            const res = await axios.get('/api/ip/' + ROUTER_ID + '/' + encodeURIComponent(IP) + '/connections');
+            if (!res.data.success) { renderConnectionsError(res.data.error); return; }
+            const data = res.data.data || {};
+            if (data.error) { renderConnectionsError(data.error); return; }
+            clearConnectionsError();
+            renderDestinations(data.destinations || []);
+            renderPorts(data.ports || []);
+            renderConnections(data.connections || []);
+        } catch (e) {
+            renderConnectionsError('Failed to load live connections.');
+        }
+    }
+
+    // ---- init ----
+    initChart();
+    renderSummary();
+    pollHistory();
+    pollConnections();
+    setInterval(pollHistory, 3000);
+    setInterval(pollConnections, 10000);
+})();
+</script>
+{% endblock %}
