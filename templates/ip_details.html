@@ -86,6 +86,13 @@
         </div>
     </div>
     <div class="card-body">
+        <label for="trafficSource" class="form-label">Chart data source</label>
+        <select id="trafficSource" class="form-select mb-2">
+            <option value="auto">Automatic (prefer Flow when enabled)</option>
+            <option value="flow">Traffic Flow exports</option>
+            <option value="api">RouterOS API estimates</option>
+        </select>
+        <p id="chartVolume" class="small" aria-live="polite"></p>
         <p id="chartSource" class="small text-muted" aria-live="polite"></p>
         <div id="chartEmpty" class="state-box d-none" style="min-height: 320px;">
             <div class="state-icon"><i class="bi bi-bar-chart-line"></i></div>
@@ -230,11 +237,14 @@
         const period = chartPeriod;
         if (!chart) return;
         try {
-            const response = await fetch('/api/ip/' + ROUTER_ID + '/' + encodeURIComponent(IP) + '/history?period=' + period);
+            const response = await fetch('/api/ip/' + ROUTER_ID + '/' + encodeURIComponent(IP) + '/history?period=' + period + '&source=' + document.getElementById('trafficSource').value);
             const payload = await response.json();
             if (requestId !== historyRequest) return;
             if (!response.ok || !payload.success) { showChartEmpty(payload.error); return; }
             const data = payload.data;
+            document.getElementById('chartVolume').textContent = data.source === 'flow' ?
+                'Selected period: upload ' + humanSize(data.upload_bytes) + ', download ' + humanSize(data.download_bytes) + '. Cards above always show the last hour.' :
+                'API estimate selected. Summary cards above retain their labelled source and period.';
             document.getElementById('chartSource').textContent = data.note || '';
             const points = data.points || [];
             if (!points.length) { showChartEmpty('No ' + (data.source === 'flow' ? 'Flow exports' : 'API samples') + ' for this IP in the selected period. Try a longer period.'); return; }
@@ -248,6 +258,7 @@
         }
     }
 
+    document.getElementById('trafficSource').addEventListener('change', pollHistory);
     document.getElementById('periodSelector').addEventListener('click', function (e) {
         const btn = e.target.closest('button[data-period]');
         if (!btn) return;
@@ -316,6 +327,10 @@
             const data = res.data.data || {};
             if (data.error) { renderConnectionsError(data.error); return; }
             clearConnectionsError();
+            if (data.note) {
+                const banner = document.getElementById('connBanner');
+                banner.textContent = data.note; banner.classList.remove('d-none');
+            }
             renderDestinations(data.destinations || []);
             renderPorts(data.ports || []);
             renderConnections(data.connections || []);

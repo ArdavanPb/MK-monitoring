@@ -604,10 +604,17 @@ def _register_routes(app):
             si = services.get_snmp_detailed_info(router)
             src_info = si.get("_source", {})
             has_data = si["resources"].get("cpu_load") and si["resources"]["cpu_load"] != "N/A"
+            if has_data and router.get("username") and router.get("password"):
+                with routeros_client.router_connection(router_id, router["host"], router["port"], router["username"], router["password"]) as (api, error):
+                    if api is not None:
+                        api_info = routeros_client.get_detailed_router_info(api)
+                        for key in ("ip_addresses", "dhcp_leases", "arp_table", "license", "clock", "logs"):
+                            if api_info.get(key):
+                                si[key] = api_info[key]
             if has_data:
-                return render_monitor(router, rd, si, empty_stats, alerts, [], "SNMP", src_info.get("port", 161), "SNMP", selected_tab)
+                return render_monitor(router, rd, si, empty_stats, alerts, [], "SNMP", src_info.get("port", 161), "SNMP", selected_tab, services.get_network_ips(router))
             if not router.get("username") or not router.get("password"):
-                return render_monitor(router, rd, si, empty_stats, alerts, [], "SNMP", src_info.get("port", 161), "SNMP", selected_tab)
+                return render_monitor(router, rd, si, empty_stats, alerts, [], "SNMP", src_info.get("port", 161), "SNMP", selected_tab, services.get_network_ips(router))
 
         if not router.get("username") or not router.get("password"):
             if router.get("flow_enabled"):
@@ -617,6 +624,10 @@ def _register_routes(app):
         with routeros_client.router_connection(
             router_id, router["host"], router["port"], router["username"], router["password"]
         ) as (api, error):
+            if api is None and router.get("snmp_enabled"):
+                return render_monitor(router, rd, si, empty_stats, alerts, [], "SNMP", src_info.get("port", 161), "SNMP", selected_tab, services.get_network_ips(router))
+            if api is None and router.get("flow_enabled"):
+                return redirect(url_for("flow_page", router_id=router_id))
             if api is None:
                 return render_template("error.html", error=error), 200
             detailed = routeros_client.get_detailed_router_info(api)
@@ -710,13 +721,18 @@ def _register_routes(app):
         period = request.args.get("period", "1h")
         if period not in services._HISTORY_PERIODS:
             return jsonify({"success": False, "error": "Invalid period"}), 400
-        if router.get("flow_enabled"):
+        source = request.args.get("source", "auto")
+        if source not in ("auto", "flow", "api"):
+            return jsonify({"success": False, "error": "Invalid traffic source"}), 400
+        if source == "flow" and not router.get("flow_enabled"):
+            return jsonify({"success": False, "error": "Flow is not enabled"}), 400
+        if source == "flow" or (source == "auto" and router.get("flow_enabled")):
             result = flow_service.ip_history(router_id, ip, services._HISTORY_PERIODS[period])
             return jsonify({"success": True, "data": {**result, "period": period}})
         result = services.get_ip_bandwidth_history(router_id, ip, period)
         if isinstance(result, dict) and result.get("error"):
             return jsonify({"success": False, "error": result["error"]}), 400
-        return jsonify({"success": True, "data": {"points": result, "period": period, "source": "api", "note": "RouterOS API counter estimates; samples arrive about once per minute."}})
+        return jsonify({"success": True, "data": {"points": result, "period": period, "source": "api", "note": "RouterOS API estimates from counter snapshots, about once per minute. Connection expiry, resets and missed short connections limit accuracy; gaps are unknown."}})
 
     @app.route("/api/ip/<int:router_id>/<ip>/connections")
     @login_required

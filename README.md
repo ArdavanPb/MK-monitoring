@@ -310,3 +310,18 @@ See [SECURITY.md](SECURITY.md) before pushing to GitHub. Current design and file
 structure live in [ARCHITECTURE.md](ARCHITECTURE.md); developer setup is in
 [CONTRIBUTING.md](CONTRIBUTING.md). Historical duplicate feature notes and the unused
 SQL migration script were removed; database migrations run through `db.init_db()`.
+
+For host comparisons, use matching time windows, IP and units. The chart source
+selector separates Flow exports from API estimates, and selected-window Flow
+volumes appear beside the chart. Cards remain explicitly labelled last-hour
+values. Host interface totals include traffic not exported by the router; Flow
+receive times include export delay. FastTrack can bypass Traffic Flow. Do not
+assume either source equals host NIC accounting without checking router coverage.
+
+### Combining API, SNMP and Flow
+SNMP supplies device metrics, IPv4 interface inventory, operational state and
+sampled interface rates. API supplies device details and live connections;
+NetFlow supplies exported per-IP traffic. The monitor merges available inventory
+and retains SNMP/Flow views when API is down. Per-IP Flow peers are labelled
+historical and are not live connections. Sources are not added together. SNMP
+IPv6 address inventory and per-host traffic accounting are not implemented.

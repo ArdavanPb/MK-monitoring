@@ -76,9 +76,9 @@ def snmp_get_float(host, community, oid, version=2, port=161):
         return float(match.group(1)) if match else None
 
 
-def snmp_walk(host, community, oid, version=2, port=161):
+def snmp_walk(host, community, oid, version=2, port=161, full_suffix=False):
     version_string = snmp_version_str(version)
-    command = ["snmpwalk", "-v", version_string, "-c", community, "-t", "5", "-r", "1", "-OQ", f"{host}:{port}", oid]
+    command = ["snmpwalk", "-v", version_string, "-c", community, "-t", "5", "-r", "1", "-OQn", f"{host}:{port}", oid]
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=15)
         if result.returncode != 0:
@@ -89,7 +89,7 @@ def snmp_walk(host, community, oid, version=2, port=161):
             if not line or " = " not in line:
                 continue
             oid_part, value = line.split(" = ", 1)
-            suffix = oid_part.split(".")[-1]
+            suffix = oid_part.lstrip(".").removeprefix(oid.lstrip(".") + ".") if full_suffix else oid_part.split(".")[-1]
             entries.append((suffix, value.strip()))
         return entries
     except Exception as exc:  # noqa: BLE001
@@ -203,6 +203,19 @@ def poll_snmp_router(router_id, host, community, version, port):
             )
 
             if_names = snmp_walk(host, community, ".1.3.6.1.2.1.2.2.1.2", version, port)
+            oper = dict(snmp_walk(host, community, ".1.3.6.1.2.1.2.2.1.8", version, port))
+            address_interfaces = snmp_walk(host, community, ".1.3.6.1.2.1.4.20.1.2", version, port, full_suffix=True)
+            masks = dict(snmp_walk(host, community, ".1.3.6.1.2.1.4.20.1.3", version, port, full_suffix=True))
+            names = {index: value.strip('"') for index, value in if_names}
+            inventory = {"interfaces": [{"name": name, "type": "SNMP", "running": "true" if oper.get(index) in ("1", "up(1)") else "false" if oper.get(index) in ("2", "down(2)") else "unknown", "mtu": "N/A"} for index, name in names.items()], "ip_addresses": []}
+            import ipaddress
+            for address, index in address_interfaces:
+                try:
+                    network = ipaddress.IPv4Interface(address + "/" + masks.get(address, "255.255.255.255"))
+                    inventory["ip_addresses"].append({"address": str(network), "network": str(network.network.network_address), "interface": names.get(index, index)})
+                except ValueError:
+                    continue
+            conn.execute("INSERT OR REPLACE INTO snmp_inventory VALUES (?,?,?)", (router_id, now, json.dumps(inventory)))
             # Prefer 64-bit HC counters. Legacy 32-bit counters wrap quickly
             # on busy interfaces and are only used when HC is unavailable.
             if_in = snmp_walk(host, community, ".1.3.6.1.2.1.31.1.1.1.6", version, port)

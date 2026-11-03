@@ -114,3 +114,22 @@ source of truth about the codebase.
 - Deleted: tab nav button + tab-pane + chart JS in `templates/monitor.html`; Chart.js CDN in `templates/base.html`; routes `api_chart_bandwidth` / `api_chart_interface_bandwidth` in `app.py`; `TIME_PERIODS` + `render_monitor` bandwidth params + `get_ip_bandwidth_stats`/`get_interface_bandwidth_stats` calls in `app.py`; `_PERIODS_MINUTES`, `get_ip_bandwidth_stats`, `get_interface_bandwidth_stats`, `get_interface_bandwidth_data` in `services.py`.
 - Kept: `get_ip_bandwidth_history` + `_HISTORY_PERIODS` (per-IP time-series for the next phase), the `ip_bandwidth_data`/`interface_bandwidth_data` tables, `bandwidth_collector.py`, and the collector functions.
 - Verified: `py_compile` on all modules; 17/17 smoke tests passed against a temp DB (login, dashboard, all remaining tabs, connections, logs, add-router, change-password; chart endpoints return 404).
+
+### 2026-11-03 — Traffic comparison
+- Added explicit Flow/API history selection and selected-window Flow byte totals.
+- Fixed missing API baseline handling; counter decreases and long gaps are unknown rather than fabricated zero rates.
+- Screenshot discrepancy remains unconfirmed pending router export/FastTrack settings and aligned measurement windows. Added API baseline/reset/direction regression coverage.
+
+### 2026-11-03 — SNMP display wiring
+- Fixed missing Network IP context on both SNMP render branches.
+- Routed SNMP interface rates to stored counter deltas instead of requiring API credentials; missing/stale/reset samples stay unknown.
+- Removed fabricated Up statuses and clarified that router address inventory is not collected via SNMP yet.
+- Added regression coverage for interface rates without API credentials.
+
+### 2026-11-03 — Combined-source monitoring
+- Added fresh SNMP IPv4 inventory/operational state with numeric full table indices.
+- Integrated inventory and Flow discovery on SNMP pages; retained useful views on API failure and API enrichment when available.
+- Added explicit historical Flow-peer fallback for unavailable live API connections, without combining traffic sources.
+- Added source integration, SNMP table-index and interface-rate regressions.
+
+- Live validation: 6 SNMP IPv4 addresses, 35 inventory interfaces and 68 merged network IPs returned. Rates are derived from SNMP counters; obsolete names are excluded when current inventory is available. Full suite: 31 tests passed.

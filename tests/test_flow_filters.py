@@ -116,3 +116,63 @@ class FlowQueryTests(unittest.TestCase):
         for value in ('secret123', 'hidden', 'sensitive'):
             self.assertNotIn(value, redacted)
         self.assertIn('visible', redacted)
+
+class ApiBaselineTests(unittest.TestCase):
+    def test_baseline_reset_and_direction(self):
+        with tempfile.TemporaryDirectory() as directory, patch.multiple(config, DB_PATH=os.path.join(directory,'test.db'), DATA_DIR=directory):
+            db.init_db()
+            rid=services.create_router({'name':'api','host':'127.0.0.1','port':8728,'username':'','password':''})
+            conn=db.get_connection()
+            now=datetime.datetime.now()
+            for age,rx,tx in ((90,1000,2000),(30,601000,302000),(10,1,1)):
+                conn.execute('INSERT INTO ip_bandwidth_data(router_id,ip_address,rx_bytes,tx_bytes,timestamp) VALUES (?,?,?,?,?)',(rid,'192.168.1.10',rx,tx,(now-datetime.timedelta(seconds=age)).strftime('%Y-%m-%d %H:%M:%S')))
+            conn.commit();conn.close()
+            rows=services.get_ip_bandwidth_history(rid,'192.168.1.10','1m')
+            self.assertEqual(len(rows),2)
+            self.assertAlmostEqual(rows[0]['download_mbps'],0.08)
+            self.assertAlmostEqual(rows[0]['upload_mbps'],0.04)
+            self.assertIsNone(rows[1]['total_mbps'])
+
+class SnmpTrafficTests(unittest.TestCase):
+    def test_snmp_rates_without_api(self):
+        with tempfile.TemporaryDirectory() as directory, patch.multiple(config, DB_PATH=os.path.join(directory,'test.db'), DATA_DIR=directory):
+            db.init_db()
+            rid=services.create_router({'name':'snmp','host':'127.0.0.1','port':8728,'username':'','password':'','snmp_enabled':1})
+            conn=db.get_connection()
+            now=datetime.datetime.now(datetime.timezone.utc)
+            for age,rx,tx in ((70,100,200),(10,60100,120200)):
+                conn.execute('INSERT INTO snmp_interface_metrics(router_id,interface_name,ifindex,rx_bytes,tx_bytes,timestamp) VALUES (?,?,?,?,?,?)',(rid,'ether1',1,rx,tx,(now-datetime.timedelta(seconds=age)).strftime('%Y-%m-%d %H:%M:%S')))
+            conn.commit();conn.close()
+            result=services.get_interface_traffic(rid)
+            self.assertEqual(result['source'],'snmp')
+            self.assertEqual(result['interfaces'][0]['rx_rate_bps'],8000)
+            self.assertEqual(result['interfaces'][0]['tx_rate_bps'],16000)
+
+class SourceIntegrationTests(FlowQueryTests):
+    def test_snmp_inventory_and_flow_peers(self):
+        import json
+        conn=db.get_connection()
+        payload={'interfaces':[{'name':'ether1','type':'SNMP','running':'false','mtu':'N/A'}], 'ip_addresses':[{'address':'192.168.50.1/24','network':'192.168.50.0','interface':'ether1'}]}
+        try:
+            conn.execute('UPDATE routers SET snmp_enabled=1 WHERE id=?',(self.rid,))
+            conn.execute("INSERT INTO snmp_inventory VALUES (?,datetime('now'),?)",(self.rid,json.dumps(payload)))
+            conn.commit()
+        finally:conn.close()
+        services._network_ips_cache.clear()
+        router=services.get_router(self.rid)
+        self.assertIn('192.168.50.1',[r['ip'] for r in services.get_network_ips(router)['records']])
+        info=services.get_snmp_detailed_info(router)
+        self.assertEqual(info['interfaces'][0]['running'],'false')
+        self.assertEqual(info['ip_addresses'][0]['address'],'192.168.50.1/24')
+        peers=services.get_ip_connections_details(self.rid,'192.168.1.75')
+        self.assertEqual(peers['source'],'flow')
+        self.assertEqual(peers['destinations'][0]['total_bytes'],7500)
+        self.assertEqual(peers['connections'],[])
+
+    def test_numeric_snmp_table_index(self):
+        import snmp_collector
+        from types import SimpleNamespace
+        output='.1.3.6.1.2.1.4.20.1.2.192.168.1.1 = 2\n.1.3.6.1.2.1.4.20.1.2.192.168.2.1 = 3\n'
+        with patch.object(snmp_collector.subprocess,'run',return_value=SimpleNamespace(returncode=0,stdout=output)):
+            rows=snmp_collector.snmp_walk('localhost','test','.1.3.6.1.2.1.4.20.1.2',full_suffix=True)
+        self.assertEqual(rows,[('192.168.1.1','2'),('192.168.2.1','3')])

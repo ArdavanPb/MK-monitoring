@@ -410,3 +410,26 @@ Docker uses Python 3.12 and Gunicorn 26.2.0 (one worker, four threads, so the
 process-local login limiter and router pool remain shared). Shell startup traps
 stop web/collector processes on shutdown. Flask 3.1.3 fixes the session cache
 header advisory found during dependency auditing.
+
+### Traffic-source comparison
+IP history accepts source=auto|flow|api; sources are never added together. Flow
+returns selected-window upload/download bytes alongside its receive-time rate.
+API history includes the preceding baseline and uses null for missing baselines,
+counter decreases and polling gaps over 180s. Active connection aggregates remain
+estimates because connections expire and short connections can be missed.
+
+SNMP monitor rendering now includes merged API/Flow Network IP discovery. Interface
+traffic for SNMP-enabled routers uses the last two SNMP samples, with a 180-second
+freshness/gap limit; resets and missing baselines yield null rates. Operational
+status comes from fresh SNMP inventory; absent values remain unknown. IPv4
+address inventory is now collected as described below.
+
+### Combined-source monitoring
+SNMP inventory now persists IPv4 addresses/netmasks/interface mappings and
+ifOperStatus in `snmp_inventory` with a 180s freshness limit; numeric full OID
+suffixes prevent collisions between addresses with identical last octets.
+SNMP pages merge inventory/Flow discovery and available API address details.
+A failed API no longer hides the SNMP page or Flow-only monitoring. Interface
+rates prefer valid SNMP deltas and try API when SNMP lacks rates and API is configured.
+Per-IP destination tables fall back to explicitly labelled last-hour Flow peers
+(top 100); live connections are never fabricated from Flow or SNMP.

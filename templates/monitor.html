@@ -164,7 +164,7 @@
                                 <tbody>{% for ip in info.ip_addresses %}<tr><td><code>{{ ip.address }}</code></td><td>{{ ip.interface }}</td></tr>{% endfor %}</tbody></table>
                             </div>
                         {% else %}
-                            {{ empty_state('ethernet', 'No IP addresses', 'No configured IP addresses found on this router.') }}
+                            {{ empty_state('ethernet', 'No IP addresses', 'No recent IPv4 address inventory returned by SNMP.' if source_type == 'SNMP' else 'No configured IP addresses found on this router.') }}
                         {% endif %}
                     </div>
                 </div>
@@ -182,7 +182,7 @@
                                         <tr data-iface="{{ iface.name }}">
                                             <td><strong>{{ iface.name }}</strong></td>
                                             <td><span class="badge-soft gray">{{ iface.type }}</span></td>
-                                            <td>{{ status_badge('online' if iface.running == 'true' else 'offline', 'Up' if iface.running == 'true' else 'Down') }}</td>
+                                            <td>{{ status_badge('unknown', 'Unknown') if iface.running == 'unknown' else status_badge('online' if iface.running == 'true' else 'offline', 'Up' if iface.running == 'true' else 'Down') }}</td>
                                             <td class="text-end nowrap iface-down"><span class="text-muted">&mdash;</span></td>
                                             <td class="text-end nowrap iface-up"><span class="text-muted">&mdash;</span></td>
                                         </tr>
@@ -489,12 +489,12 @@ function loadInterfaceTraffic() {
             if (!row) return;
             const downCell = row.querySelector('.iface-down');
             const upCell = row.querySelector('.iface-up');
-            if (!iface.running) {
+            if (iface.running === false) {
                 downCell.innerHTML = '<span class="text-muted">down</span>';
                 upCell.innerHTML = '<span class="text-muted">down</span>';
             } else {
-                downCell.innerHTML = '<strong>' + formatBits(iface.rx_rate_bps) + '</strong><br><small class="text-muted">' + formatBytesHuman(iface.rx_total_bytes) + '</small>';
-                upCell.innerHTML = '<strong>' + formatBits(iface.tx_rate_bps) + '</strong><br><small class="text-muted">' + formatBytesHuman(iface.tx_total_bytes) + '</small>';
+                downCell.innerHTML = '<strong>' + (iface.rx_rate_bps == null ? '—' : formatBits(iface.rx_rate_bps)) + '</strong><br><small class="text-muted">' + formatBytesHuman(iface.rx_total_bytes) + '</small>';
+                upCell.innerHTML = '<strong>' + (iface.tx_rate_bps == null ? '—' : formatBits(iface.tx_rate_bps)) + '</strong><br><small class="text-muted">' + formatBytesHuman(iface.tx_total_bytes) + '</small>';
             }
         });
     }).catch(function () {});

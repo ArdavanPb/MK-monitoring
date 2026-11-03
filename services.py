@@ -416,27 +416,35 @@ def get_ip_bandwidth_history(router_id, ip_address, time_period):
             "WHERE router_id=? AND ip_address=? AND timestamp>=? ORDER BY timestamp",
             (router_id, ip_address, threshold),
         ).fetchall()
+        baseline = conn.execute(
+            "SELECT timestamp, rx_bytes, tx_bytes FROM ip_bandwidth_data "
+            "WHERE router_id=? AND ip_address=? AND timestamp<? ORDER BY timestamp DESC LIMIT 1",
+            (router_id, ip_address, threshold),
+        ).fetchone()
+        rows = ([baseline] if baseline else []) + list(rows)
         data_points = []
         for index, row in enumerate(rows):
             if index == 0:
-                download = upload = 0
+                download = upload = None
             else:
                 previous_row = rows[index - 1]
                 previous = datetime.datetime.strptime(previous_row["timestamp"], "%Y-%m-%d %H:%M:%S")
                 current = datetime.datetime.strptime(row["timestamp"], "%Y-%m-%d %H:%M:%S")
                 diff = (current - previous).total_seconds()
-                if diff > 0:
+                if 0 < diff <= 180 and (row["rx_bytes"] or 0) >= (previous_row["rx_bytes"] or 0) and (row["tx_bytes"] or 0) >= (previous_row["tx_bytes"] or 0):
                     delta_rx = max(0, (row["rx_bytes"] or 0) - (previous_row["rx_bytes"] or 0))
                     delta_tx = max(0, (row["tx_bytes"] or 0) - (previous_row["tx_bytes"] or 0))
                     download = (delta_rx * 8) / diff / 1000000
                     upload = (delta_tx * 8) / diff / 1000000
                 else:
-                    download = upload = 0
+                    download = upload = None
+            if row["timestamp"] < threshold:
+                continue
             data_points.append({
                 "timestamp": row["timestamp"],
                 "download_mbps": download,
                 "upload_mbps": upload,
-                "total_mbps": download + upload,
+                "total_mbps": download + upload if download is not None else None,
             })
         return data_points
     finally:
@@ -519,6 +527,11 @@ def get_network_ips(router):
                 interfaces = fetch("interface", "/interface")
     else:
         api_error = "No API credentials configured"
+
+    if router.get("snmp_enabled"):
+        inventory = get_snmp_inventory(router_id)
+        addresses = list(addresses) + inventory["ip_addresses"]
+        interfaces = list(interfaces) + inventory["interfaces"]
 
     interface_running = {}
     for iface in interfaces:
@@ -677,6 +690,11 @@ def get_interface_traffic(router_id):
     router = get_router(router_id)
     if not router:
         return {"interfaces": [], "error": "Router not found"}
+
+    if router.get("snmp_enabled"):
+        snmp = get_snmp_interface_traffic(router_id)
+        if any(item["rx_rate_bps"] is not None for item in snmp["interfaces"]) or not router.get("username") or not router.get("password"):
+            return snmp
 
     if not router.get("username") or not router.get("password"):
         return {"interfaces": [], "error": "No API credentials configured"}
@@ -885,11 +903,15 @@ def get_ip_connections_details(router_id, ip_address):
         return {"destinations": [], "ports": [], "connections": [], "error": "Router not found", "estimated": True}
 
     if not router.get("username") or not router.get("password"):
-        return {"destinations": [], "ports": [], "connections": [], "error": "No API credentials configured", "estimated": True}
+        if router.get("flow_enabled"):
+            return flow_service.ip_peers(router_id, ip_address)
+        return {"destinations": [], "ports": [], "connections": [], "error": "Live connections require RouterOS API; SNMP does not provide per-IP connections.", "estimated": True}
 
     with routeros_client.router_connection(
         router_id, router["host"], router["port"], router["username"], router["password"]
     ) as (api, error):
+        if api is None and router.get("flow_enabled"):
+            return flow_service.ip_peers(router_id, ip_address)
         if api is None:
             return {"destinations": [], "ports": [], "connections": [], "error": error or "Connection failed", "estimated": True}
         raw = routeros_client.safe_api_call(api, "/ip/firewall/connection")["data"] or []
@@ -1335,13 +1357,18 @@ def get_snmp_detailed_info(router):
             "SELECT DISTINCT interface_name FROM snmp_interface_metrics WHERE router_id=? AND timestamp>=?", (router_id, fresh_after)
         ).fetchall() if poll_ok else []
         info["interfaces"] = [
-            {"name": row["interface_name"], "type": "SNMP", "running": "true", "mtu": "N/A"}
+            {"name": row["interface_name"], "type": "SNMP", "running": "unknown", "mtu": "N/A"}
             for row in interfaces
         ]
     except Exception as exc:  # noqa: BLE001
         logger.error("SNMP info error: %s", exc)
     finally:
         conn.close()
+    if poll_ok:
+        inventory = get_snmp_inventory(router_id)
+        info["ip_addresses"] = inventory["ip_addresses"]
+        if inventory["interfaces"]:
+            info["interfaces"] = inventory["interfaces"]
     return info
 
 
@@ -1412,3 +1439,49 @@ def delete_alert_rule(rule_id):
         conn.commit()
     finally:
         conn.close()
+
+
+def get_snmp_interface_traffic(router_id):
+    """Interface averages from successive SNMP counter samples, never API calls."""
+    conn = db.get_connection()
+    try:
+        rows = conn.execute("SELECT * FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY ifindex ORDER BY timestamp DESC,id DESC) AS rank FROM snmp_interface_metrics WHERE router_id=?) WHERE rank<=2", (router_id,)).fetchall()
+    finally:
+        conn.close()
+    grouped = {}
+    for row in rows:
+        grouped.setdefault(row["ifindex"], []).append(row)
+    result = []
+    state = get_snmp_poll_state(router_id)
+    inventory = {item["name"]: item for item in get_snmp_inventory(router_id)["interfaces"]}
+    for samples in grouped.values():
+        samples.sort(key=lambda row: (row["timestamp"], row["id"]), reverse=True)
+        latest = samples[0]
+        if inventory and latest["interface_name"] not in inventory:
+            continue
+        age = flow_service.timestamp_age_seconds(latest["timestamp"])
+        valid = age is not None and age <= 180 and (not state or state["status"] == "online")
+        rx = tx = None
+        if valid and len(samples) == 2:
+            old = samples[1]
+            seconds = (datetime.datetime.fromisoformat(latest["timestamp"]) - datetime.datetime.fromisoformat(old["timestamp"])).total_seconds()
+            if 0 < seconds <= 180:
+                if latest["rx_bytes"] >= old["rx_bytes"] and latest["tx_bytes"] >= old["tx_bytes"]:
+                    rx = (latest["rx_bytes"] - old["rx_bytes"]) * 8 / seconds
+                    tx = (latest["tx_bytes"] - old["tx_bytes"]) * 8 / seconds
+        result.append({"name": latest["interface_name"], "running": {"true": True, "false": False}.get(inventory.get(latest["interface_name"], {}).get("running")), "type": "SNMP",
+                       "rx_rate_bps": rx, "tx_rate_bps": tx,
+                       "rx_total_bytes": latest["rx_bytes"] if valid else None,
+                       "tx_total_bytes": latest["tx_bytes"] if valid else None})
+    return {"interfaces": result, "error": None, "source": "snmp"}
+
+
+def get_snmp_inventory(router_id):
+    conn = db.get_connection()
+    try:
+        row = conn.execute("SELECT * FROM snmp_inventory WHERE router_id=?", (router_id,)).fetchone()
+    finally:
+        conn.close()
+    if row and row["collected_at"] >= (_utc_now()-datetime.timedelta(seconds=180)).strftime("%Y-%m-%d %H:%M:%S"):
+        return json.loads(row["payload"])
+    return {"interfaces": [], "ip_addresses": []}

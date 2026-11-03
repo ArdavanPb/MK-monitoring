@@ -335,3 +335,11 @@ def _seed_default_user(conn):
         "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
         (config.DEFAULT_USERNAME, hash_password(password), "admin"),
     )
+
+
+_SCHEMA["snmp_inventory"] = """
+CREATE TABLE IF NOT EXISTS snmp_inventory (
+ router_id INTEGER PRIMARY KEY REFERENCES routers(id) ON DELETE CASCADE,
+ collected_at TEXT NOT NULL, payload TEXT NOT NULL
+)
+"""

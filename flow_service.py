@@ -156,4 +156,25 @@ def ip_history(router_id, ip_address, minutes):
                 "total_mbps": upload + download if row else None,
             })
     return {"points": points, "source": "flow", "bucket_seconds": bucket_seconds,
+            "upload_bytes": sum(row["upload"] for row in rows),
+            "download_bytes": sum(row["download"] for row in rows),
+            "window_seconds": minutes * 60,
             "note": "Traffic Flow: average rate by export receive time (UTC). Gaps mean no exports; delayed or sampled exports affect the rate."}
+
+
+def ip_peers(router_id, ip):
+    """Historical exported peers, explicitly distinct from live API connections."""
+    conn = db.get_connection()
+    try:
+        rows = conn.execute('''SELECT CASE WHEN src_ip=? THEN dst_ip ELSE src_ip END AS ip,
+            SUM(CASE WHEN src_ip=? THEN bytes ELSE 0 END) AS upload_bytes,
+            SUM(CASE WHEN dst_ip=? THEN bytes ELSE 0 END) AS download_bytes,
+            SUM(bytes) AS total_bytes, COUNT(*) AS count
+            FROM flow_records WHERE router_id=? AND received_at>=? AND (src_ip=? OR dst_ip=?)
+            GROUP BY 1 ORDER BY total_bytes DESC LIMIT 100''',
+            (ip, ip, ip, router_id, _threshold(60), ip, ip)).fetchall()
+    finally:
+        conn.close()
+    return {"destinations": [dict(row) for row in rows], "ports": [], "connections": [],
+            "error": None, "estimated": False, "source": "flow",
+            "note": "API live connections unavailable. Destinations show the top 100 Flow peers from the last hour; these are historical exports, not live connections."}
