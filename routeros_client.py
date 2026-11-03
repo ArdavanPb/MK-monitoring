@@ -1,21 +1,33 @@
 """RouterOS API connectivity and data retrieval helpers."""
+import contextlib
 import logging
+import socket
 import subprocess
+import threading
+import time
 import traceback
 
 import routeros_api
+
+import config
 
 # The exception classes live in ``routeros_api.exceptions`` in current
 # releases, but older versions exposed them at the top level. Fall back to the
 # top-level namespace when the submodule is unavailable.
 try:
     from routeros_api.exceptions import (  # noqa: F401
+        FatalRouterOsApiError,
+        RouterOsApiCommunicationError,
         RouterOsApiConnectionError,
         RouterOsApiError,
+        RouterOsApiFatalCommunicationError,
     )
 except ImportError:  # pragma: no cover - compatibility shim
     RouterOsApiConnectionError = getattr(routeros_api, "RouterOsApiConnectionError", Exception)
     RouterOsApiError = getattr(routeros_api, "RouterOsApiError", Exception)
+    RouterOsApiCommunicationError = getattr(routeros_api, "RouterOsApiCommunicationError", RouterOsApiError)
+    RouterOsApiFatalCommunicationError = getattr(routeros_api, "RouterOsApiFatalCommunicationError", RouterOsApiError)
+    FatalRouterOsApiError = getattr(routeros_api, "FatalRouterOsApiError", RouterOsApiError)
 
 logger = logging.getLogger("app")
 
@@ -47,6 +59,169 @@ def connect_to_router(host, port, username, password):
         return None, None, f"Connection failed: {message}"
 
 
+# ─── Persistent connection pool ────────────────────────────────────────────
+#
+# A RouterOS API login is expensive on the router — each one emits a
+# "user <x> logged in/out via api" log pair and costs CPU/RAM. With 3s/10s
+# polls and the six-source network-IPs merge, opening a fresh connection per
+# call floods the router's log. This pool keeps one reusable connection per
+# router id and guards it with a per-router lock (librouteros connections are
+# not thread-safe, and Flask is threaded).
+
+
+class _PooledConnection:
+    __slots__ = ("api", "pool", "host", "port", "username", "created_at", "dead")
+
+    def __init__(self, api, pool, host, port, username):
+        self.api = api
+        self.pool = pool
+        self.host = host
+        self.port = port
+        self.username = username
+        self.created_at = time.monotonic()
+        self.dead = False
+
+
+_registry = {}            # router_id -> _PooledConnection
+_registry_lock = threading.Lock()
+_router_locks = {}        # router_id -> threading.Lock (stable across reconnects)
+_router_locks_lock = threading.Lock()
+_api_index = {}           # id(api) -> _PooledConnection (for dead-marking)
+
+
+def _router_lock(router_id):
+    with _router_locks_lock:
+        return _router_locks.setdefault(router_id, threading.Lock())
+
+
+def _is_stale(entry):
+    return time.monotonic() - entry.created_at > config.ROUTER_API_POOL_MAX_AGE
+
+
+def _close_entry(entry):
+    try:
+        entry.pool.disconnect()
+    except Exception:  # noqa: BLE001 - best-effort close
+        logger.debug("Error closing pooled connection", exc_info=True)
+    with _registry_lock:
+        _api_index.pop(id(entry.api), None)
+
+
+def _connect_entry(router_id, host, port, username, password):
+    api, pool, error = connect_to_router(host, port, username, password)
+    if api is None:
+        return None, error
+    entry = _PooledConnection(api, pool, host, port, username)
+    with _registry_lock:
+        _registry[router_id] = entry
+        _api_index[id(api)] = entry
+    return entry, None
+
+
+def _get_live_entry(router_id, host, port, username):
+    with _registry_lock:
+        entry = _registry.get(router_id)
+        if (
+            entry is not None
+            and not entry.dead
+            and not _is_stale(entry)
+            and entry.host == host
+            and entry.port == port
+            and entry.username == username
+        ):
+            return entry
+        return None
+
+
+def _acquire(router_id, host, port, username, password):
+    """Return ``(entry, error)``; the caller holds the per-router lock."""
+    entry = _get_live_entry(router_id, host, port, username)
+    if entry is not None:
+        return entry, None
+    with _registry_lock:
+        old = _registry.pop(router_id, None)
+    if old is not None:
+        _close_entry(old)
+    return _connect_entry(router_id, host, port, username, password)
+
+
+@contextlib.contextmanager
+def router_connection(router_id, host, port, username, password):
+    """Yield ``(api, error)`` from the per-router persistent connection pool.
+
+    One connection is kept alive per router id and reused across calls. The
+    context yields ``(None, "<reason>")`` when the router is unreachable.
+    Callers must NOT disconnect the yielded api — the pool owns its lifetime.
+    Concurrent callers for the same router serialize on a per-router lock; a
+    connection flagged dead by a previous call (or aged out) is transparently
+    reconnected once, and a failed reconnect surfaces the usual
+    graceful-degradation error.
+    """
+    lock = _router_lock(router_id)
+    with lock:
+        entry, error = _acquire(router_id, host, port, username, password)
+        if entry is None:
+            yield None, error
+            return
+        yield entry.api, None
+
+
+def mark_connection_dead(api):
+    """Flag and close the pooled connection backing ``api`` for reconnect.
+
+    Called by ``safe_api_call``/``safe_api_call_command`` when a connection-level
+    error (socket error / timeout / fatal communication error) is observed. The
+    socket is closed immediately (a timeout leaves it half-open; the library only
+    auto-closes on ``RouterOsApiConnectionError``) and the next acquire reconnects.
+    A no-op for one-shot (non-pooled) connections, e.g. add/edit-router validation.
+    """
+    with _registry_lock:
+        entry = _api_index.get(id(api))
+    if entry is not None and entry.api is api and not entry.dead:
+        entry.dead = True
+        try:
+            entry.pool.disconnect()
+        except Exception:  # noqa: BLE001 - best-effort close
+            logger.debug("Error closing dead pooled connection", exc_info=True)
+
+
+def close_connection(router_id):
+    """Close and forget the pooled connection for a router (edit/delete/etc.)."""
+    with _router_lock(router_id):
+        with _registry_lock:
+            entry = _registry.pop(router_id, None)
+        if entry is not None:
+            _close_entry(entry)
+
+
+def clear_connection_pool():
+    """Close every pooled connection. Mainly for tests and app teardown."""
+    with _registry_lock:
+        entries = list(_registry.values())
+        _registry.clear()
+        _api_index.clear()
+    for entry in entries:
+        try:
+            entry.pool.disconnect()
+        except Exception:  # noqa: BLE001
+            logger.debug("Error closing pooled connection", exc_info=True)
+
+
+def _is_connection_failure(exc):
+    """True when an exception means the socket is dead (timeout / reset / EOF).
+
+    RouterOS-level rejections (a plain ``RouterOsApiError`` with no fatal marker)
+    and ordinary code bugs must NOT mark a pooled connection dead.
+    """
+    if isinstance(exc, (socket.timeout, TimeoutError, ConnectionError)):
+        return True
+    message = str(exc).lower()
+    return any(
+        token in message
+        for token in ("timed out", "timeout", "broken pipe", "connection reset", "connection closed")
+    )
+
+
 def safe_api_call(api, resource_path):
     """Call a RouterOS API resource returning {'data', 'error'}."""
     try:
@@ -56,14 +231,19 @@ def safe_api_call(api, resource_path):
             return {"data": None, "error": f"{resource_path} returned None"}
         return {"data": result, "error": None}
     except RouterOsApiConnectionError as exc:
+        mark_connection_dead(api)
         logger.warning("API %s connection error: %s", resource_path, exc)
         return {"data": None, "error": f"Connection error: {exc}"}
     except RouterOsApiError as exc:
+        if isinstance(exc, (RouterOsApiCommunicationError, RouterOsApiFatalCommunicationError, FatalRouterOsApiError)):
+            mark_connection_dead(api)
         # RouterOS-level rejections (e.g. "no such command prefix" for an
         # optional feature) are expected and do not need a full traceback.
         logger.warning("API %s rejected: %s", resource_path, exc)
         return {"data": None, "error": str(exc)}
     except Exception as exc:  # noqa: BLE001
+        if _is_connection_failure(exc):
+            mark_connection_dead(api)
         logger.error("API %s error: %s\n%s", resource_path, exc, traceback.format_exc())
         return {"data": None, "error": str(exc)}
 
@@ -77,12 +257,17 @@ def safe_api_call_command(api, resource_path, command, arguments=None):
             return {"data": None, "error": f"{resource_path} {command} returned None"}
         return {"data": result, "error": None}
     except RouterOsApiConnectionError as exc:
+        mark_connection_dead(api)
         logger.warning("API %s %s connection error: %s", resource_path, command, exc)
         return {"data": None, "error": f"Connection error: {exc}"}
     except RouterOsApiError as exc:
+        if isinstance(exc, (RouterOsApiCommunicationError, RouterOsApiFatalCommunicationError, FatalRouterOsApiError)):
+            mark_connection_dead(api)
         logger.warning("API %s %s rejected: %s", resource_path, command, exc)
         return {"data": None, "error": str(exc)}
     except Exception as exc:  # noqa: BLE001
+        if _is_connection_failure(exc):
+            mark_connection_dead(api)
         logger.error("API %s %s error: %s\n%s", resource_path, command, exc, traceback.format_exc())
         return {"data": None, "error": str(exc)}
 
@@ -105,7 +290,7 @@ def test_snmp_connection(host, community, version, port):
             "snmpget", "-v", version, "-c", community, "-t", "5", "-r", "1",
             "-OQv", f"{host}:{port}", ".1.3.6.1.2.1.1.3.0",
         ]
-        logger.info("Testing SNMP: %s", " ".join(cmd))
+        logger.info("Testing SNMP connectivity to %s:%s", host, port)
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
         return result.returncode == 0
     except FileNotFoundError:

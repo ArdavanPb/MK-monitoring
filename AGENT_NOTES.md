@@ -6,9 +6,65 @@ source of truth about the codebase.
 ## Rules
 
 - Before every task, first read ARCHITECTURE.md and only open files relevant to that task; NEVER re-read the entire project from scratch.
-- After every change, add a summary of the change to the Change Log section of this file.
+- After every change, check the affected documentation and project structure, update README.md/ARCHITECTURE.md when behavior or files change, and add a summary to the Change Log section of this file.
 
 ## Change Log
+
+### 2026-11-03 — Flow exploration, IP charts and publication cleanup
+- Replaced the 20-IP cap with counted pagination, source/destination filters, endpoint search/view and upload/download/total sorting.
+- Connected per-IP charts to Flow exports; added 1m/5m/30m windows, bounded receive-time buckets and null gaps; removed the last-60-points truncation and bundled Chart.js with its license.
+- Removed fixed bootstrap credentials, recursive audit secret leakage and the unsafe shared /tmp DB fallback. Added session/response safeguards and a strict Docker build-context allowlist.
+- Removed unused historical documentation and migration.sql (copies preserved locally in /tmp/mk-monitoring-retired-docs). Added SECURITY.md, .env.example and CI; updated current architecture and setup instructions.
+- Updated Flask to 3.1.3 after the dependency audit flagged its session cache-header advisory; Docker now uses Python 3.12 and Gunicorn 26.2.0.
+- Validation: 21 tests passed both locally and in the final Python 3.12 image; browser checks confirmed source/destination filters and 1m/5m/30m chart rendering without console errors. The patched dependency audit reports no known vulnerabilities. Git-history token/private-key pattern scan found no matches (not a comprehensive secret audit).
+- Deployment verified: container healthy, TCP 8080 and UDP 2055 published, host login HTTP 200; live one-hour query returned 1810 IPs (50/page) in 94 ms, fresh Flow data, and all three short chart APIs returned populated Flow points. New image contains no local data, key files, .env, Git or tests; bundled chart is present. Existing passwords remain unchanged; the operator was told to replace a legacy default password.
+
+
+### 2026-11-03 — NetFlow v9 support
+- Added RFC 3954 template decoding for IPv4/IPv6, exporter/Source-ID isolation, expiry and bounded caches, options handling and throttled warnings. V5 remains supported.
+- Updated setup examples to version=9 and documented template refresh behavior.
+- Validation: 15 tests cover v5/v9 parsing, template isolation/expiry, options, IPv6, SQLite storage and UDP receipt. Rebuilt and recreated the Docker service; published ports remained attached.
+- Live verification: router 3 exported v9 templates/data; 225 flow records (351050 bytes) were stored by 07:04:22 UTC, summary fresh=true with 20 top IPs, and `/api/flow/3?minutes=5` returned HTTP 200. API port 8728 remains refused independently.
+
+
+### 2026-11-03 — Docker browser port recovery
+- Diagnosed a healthy container whose `docker compose ps` showed no published ports although Compose configured TCP 8080 and UDP 2055. `docker inspect` showed `NetworkSettings.Networks={}` and the Compose network had no attached container.
+- Connected the running container to `mk-monitoring_mikrotik-monitor-network`. Verified Docker now publishes both ports and HTTP on `127.0.0.1:8080` and the host LAN address on port 8080 redirects to `/login`.
+- The router API at the router management address on port 8728 then returned `Connection refused` from both host and container; this is separate from browser access. Added the conditional recovery steps to README.
+
+### 2026-11-03 — Traffic Flow receiver and freshness-aware monitoring
+- Added a NetFlow v5 UDP receiver, source-IP allowlist, strict packet validation, deduplication, SQLite flow tables/indexes, seven-day retention, and 5-minute/1-hour summary queries.
+- Added Flow configuration to router add/edit, a live Flow page, per-IP Flow totals, and dashboard cards for Flow freshness, SNMP freshness, average Flow rate and active alerts. Flow-only routers are supported.
+- Corrected stale SNMP/API status handling and status-cache growth; SNMP polling now marks failures offline and prefers 64-bit interface counters. Removed SNMP community logging from connection tests.
+- Wired UDP 2055 into Docker and both full-stack startup scripts. Updated README, ARCHITECTURE, CONTRIBUTING, and marked PROJECT_DOCUMENT historical.
+- Verified with `venv/bin/python -m unittest discover -s tests -v` (7 tests, including a real localhost UDP export), Python compilation, and `git diff --check`. Live-router and container verification still require deployment.
+
+### 2026-09-29 — Verified: pool is reusing; ~6s churn is startup + stale log; fixed monitor-traffic
+- Environment verified in the running container (not just host copy): `services.py` has `router_connection` at all 6 API call sites and zero `connect_to_router`/`disconnect`; `routeros_client.py` has the pool. No volume shadows the code (`docker-compose.yml` mounts only `./data:/app/data`).
+- Double-instance check: one container with four processes (Flask `app.py`, `bandwidth_collector.py`, `alert_engine.py`, `snmp_collector.py`); only Flask and the bandwidth collector hit the RouterOS API. No host cron/systemd/second checkout/rogue API client. The host LAN address matches the log source IP.
+- Steady state is churn-free: `docker exec … cat /proc/net/tcp` sampled over 64s shows exactly two ESTABLISHED connections to the router management address on port 8728 (one per API process) with unchanged sockets/inodes the entire time. No `connection error` log lines after the startup burst.
+- The "~6s login/logout" after `docker compose up --build` is the startup burst (Flask + collector login, plus a one-time `/ip/accounting` "no such command prefix" fatal error → library `disconnect()` → fallback `/ip/firewall/connection` "[Errno 9] Bad file descriptor" → next-cycle reconnect) and/or a stale MikroTik memory log. It does not recur.
+- Fixed a real, separate bug: `get_interface_traffic` used the bare `/interface monitor-traffic =once=yes`, which this router (v7) rejects with "missing =interface=" — live rates were always 0. Now issues one `monitor-traffic =interface=<name> =once=yes` per running interface on the pooled connection. Updated `smoke_interface_traffic.py`'s fake to return per-interface data.
+- Verified: full smoke suite green — 17+51+44+9+7+27+12 = 167 assertions (includes pool reuse, reconnect, thread-safety, zero-disconnect, and per-interface monitor checks).
+
+### 2026-09-29 — Diagnosis: MikroTik still shows ~6s login/logout pairs
+- Finding 1 (library): `routeros-api==0.18` never sends a RouterOS `quit`. `RouterOsApiPool.disconnect()` only closes the TCP socket (`connected=False`; `socket.close()`; swap in `DummySocket`); `base_api.Connection` has no quit/close command. MikroTik logs "logged out" on any API-socket teardown, so a bare close and a quit are indistinguishable — there is no silent-close option. Conclusion: the only way to avoid periodic "logged out" is to keep the connection open (which the pool does).
+- Finding 2 (~6s cadence): interface-traffic is polled every 3s (`monitor.html` setInterval 3000) but `INTERFACE_TRAFFIC_CACHE_TTL` is also 3s, so every other poll is a cache hit and the router is queried only every ~6s. The pre-pool code did connect+disconnect per query → one login/logout pair every ~6s. Not two 3s pollers (the IP-details 3s `pollHistory` is a DB read; its `pollConnections` is 10s).
+- Finding 3 (MAX_AGE): `ROUTER_API_POOL_MAX_AGE=300` is correct (`time.monotonic()` both sides); it recycles each pooled connection once per ~5 min (one pair per router per 5 min), not per 6s — not the cause.
+- Action: no code bug in the pool — steady state never calls `disconnect()` (only the dead/stale recycle, `close_connection` on edit/delete, and teardown do). Added assertion to `smoke_connection_pool.py`: zero disconnects across 5 sequential poll cycles. The ~6s pairs are explained by the app still running pre-pool code; restart Flask (`./restart-app.sh` or `docker-compose restart`) to load the pool.
+- Verified: smoke_connection_pool 12/12; existing suites 17+51+44+9+7+27 = 155/155.
+
+### 2026-09-29 — Per-router API connection pooling (fix login churn)
+- Root cause: every API poll opened and closed a fresh RouterOS connection, so the 3s interface-traffic poll + 10s network-IPs poll (6-source merge) produced "user test logged in/out via api" log pairs on the router every few seconds (CPU/RAM cost + a flooded memory log).
+- Fix in `routeros_client.py`: a per-router persistent connection pool. One `RouterOsApiPool` per router id in a module-level registry, guarded by a per-router `threading.Lock` (librouteros connections are not thread-safe; Flask is threaded). New public surface:
+  - `router_connection(router_id, host, port, user, pass)` — context manager yielding `(api, error)`; reuses a healthy cached connection, else reconnects once and surfaces the usual graceful-degradation error on failure.
+  - `close_connection(router_id)` (router edit/delete), `clear_connection_pool()` (tests/teardown), `mark_connection_dead(api)` (called by `safe_api_call*`).
+  - `MAX_CONNECTION_AGE` → `config.ROUTER_API_POOL_MAX_AGE` (default 300s) recycles idle connections to avoid zombie sockets behind NAT/idle timeouts.
+- Health handling: `safe_api_call`/`safe_api_call_command` mark the pooled connection dead on `RouterOsApiConnectionError`, fatal/communication errors, and socket timeouts/resets; a plain `RouterOsApiError` (e.g. "no such command") does NOT. The pool reconnects the dead connection on the next acquire (one reconnect attempt; failure flows into existing graceful-degradation paths).
+- Callers converted to `router_connection` (kept `safe_api_call*` signatures unchanged): `app.py` index/monitor_router/router_logs; `services.py` update_router_status_cache/get_network_ips/get_interface_traffic/get_ip_connections_details/get_live_firewall_connections (body extracted to `_fetch_firewall_connections`)/run_router_backup; `bandwidth_collector.py` (one connection across 60s cycles). `add_router`/`edit_router` still use one-shot `connect_to_router` (fresh-credential validation); `edit_router`/`delete_router` call `close_connection(router_id)`.
+- Polling intervals unchanged (3s/10s) — pooling is the fix, not slower polls.
+- Verified: `py_compile` + `pyflakes` clean; new `smoke_connection_pool.py` 11/11 (one connect across sequential network-IPs + interface-traffic calls, exactly one reconnect after a failed call, thread-safety smoke with max-active==1); existing suites still green 17+51+44+9+7+27 = 155/155. Existing scratch tests updated to call `clear_connection_pool()` where they switch `connect_to_router` to a disconnected fake (pool would otherwise cache the earlier connection).
+- Deploy note: after deploying, the MikroTik log should show ~one login per app start + occasional reconnects, not per-second pairs.
 
 ### 2026-09-28 — Interface traffic stats + Network IPs local/external split
 - Feature 1 (Interface traffic): new `GET /api/interface-traffic/<id>` (app.py) + `services.get_interface_traffic` (services.py). Returns per-interface live rx/tx rates from `/interface monitor-traffic` (once, all interfaces — via new `routeros_client.safe_api_call_command`, since `safe_api_call` is a print-only helper) plus cumulative totals that prefer the latest `interface_bandwidth_data` sample and fall back to `/interface` rx-byte/tx-byte. Cached 3s (`INTERFACE_TRAFFIC_CACHE_TTL`). `monitor.html` Interfaces table gains Down/Up columns polled every 3s client-side; Down interfaces render "down".

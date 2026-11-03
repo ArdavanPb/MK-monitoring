@@ -1,0 +1,194 @@
+{% extends "base.html" %}
+
+{% block title %}Traffic Flow · {{ router.name }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Traffic Flow · {{ router.name }}</h1>
+        <p class="page-subtitle">NetFlow v5/v9 exports from {{ router.host }} · UDP {{ flow_port }}</p>
+    </div>
+    <div class="page-actions">
+        <a href="{{ url_for('index') }}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-1"></i>Dashboard</a>
+    </div>
+</div>
+
+<div id="flowStatus" class="alert alert-info" role="status">Waiting for Flow data…</div>
+<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+    <p class="text-muted small mb-0">Rates are averages over the selected window. Flow records arrive when RouterOS exports them. Sampled traffic is not extrapolated.</p>
+    <div class="btn-group btn-group-sm" role="group" aria-label="Traffic period" id="flowPeriod">
+        <button type="button" class="btn btn-outline-primary active" data-minutes="5">5 min</button>
+        <button type="button" class="btn btn-outline-primary" data-minutes="60">1 hour</button>
+        <button type="button" class="btn btn-outline-primary" data-minutes="1440">24 hours</button>
+    </div>
+</div>
+<form id="flowFilters" class="app-card p-3 mb-3">
+    <div class="row g-2">
+        <div class="col-md-3"><label class="form-label" for="src">Source IP (exact)</label><input class="form-control" id="src" name="src" placeholder="192.168.88.10" maxlength="45"></div>
+        <div class="col-md-3"><label class="form-label" for="dst">Destination IP (exact)</label><input class="form-control" id="dst" name="dst" placeholder="8.8.8.8" maxlength="45"></div>
+        <div class="col-md-3"><label class="form-label" for="search">Find IP (contains)</label><input class="form-control" id="search" name="search" maxlength="64" placeholder="192.168."></div>
+        <div class="col-md-3"><label class="form-label" for="view">Endpoints</label><select class="form-select" id="view" name="view"><option value="all">All IPs</option><option value="src">Sources only</option><option value="dst">Destinations only</option></select></div>
+        <div class="col-md-3"><label class="form-label" for="sort">Sort by</label><select class="form-select" id="sort" name="sort"><option value="total">Total traffic</option><option value="upload">Upload (source bytes)</option><option value="download">Download (destination bytes)</option><option value="ip">IP address (text)</option></select></div>
+        <div class="col-md-3"><label class="form-label" for="direction">Order</label><select class="form-select" id="direction" name="direction"><option value="desc">Highest first</option><option value="asc">Lowest first</option></select></div>
+        <div class="col-md-3"><label class="form-label" for="per_page">IPs per page</label><select class="form-select" id="per_page" name="per_page"><option>50</option><option>100</option><option>200</option></select></div>
+        <div class="col-md-3 d-flex align-items-end gap-2"><button class="btn btn-primary" type="submit">Apply</button><button class="btn btn-outline-secondary" type="reset">Reset</button></div>
+    </div>
+    <p class="small text-muted mt-2 mb-0">Source and destination filters apply to all totals. Find IP and Endpoints filter the IP table only. Upload means bytes sent by an IP; download means bytes received. Only IPs observed in exported traffic during this period appear.</p>
+</form>
+<div class="stat-grid">
+    <div class="stat-card"><div class="stat-icon blue"><i class="bi bi-speedometer2"></i></div><div><div class="stat-value" id="flowRate">—</div><div class="stat-label">Average throughput</div></div></div>
+    <div class="stat-card"><div class="stat-icon cyan"><i class="bi bi-hdd-network"></i></div><div><div class="stat-value" id="flowBytes">—</div><div class="stat-label">Traffic volume</div></div></div>
+    <div class="stat-card"><div class="stat-icon green"><i class="bi bi-diagram-3"></i></div><div><div class="stat-value" id="flowCount">—</div><div class="stat-label">Flow records</div></div></div>
+    <div class="stat-card"><div class="stat-icon amber"><i class="bi bi-box"></i></div><div><div class="stat-value" id="flowPackets">—</div><div class="stat-label">Packets</div></div></div>
+</div>
+
+<div class="row g-3">
+    <div class="col-lg-8">
+        <div class="app-card h-100">
+            <div class="card-header"><h5>All observed IPs</h5><span id="flowIpCount" class="text-muted small"></span></div>
+            <div class="card-body p-0 table-responsive">
+                <table class="table-app">
+                    <thead><tr><th>IP</th><th>Scope</th><th class="text-end">Upload</th><th class="text-end">Download</th><th class="text-end">Total</th></tr></thead>
+                    <tbody id="flowIps"><tr><td colspan="5" class="text-center text-muted py-4">No Flow records yet</td></tr></tbody>
+                </table>
+            </div>
+            <div class="p-3 d-flex align-items-center justify-content-between gap-2">
+                <button id="flowPrev" class="btn btn-sm btn-outline-primary" type="button">Previous</button>
+                <span id="flowPage" class="small" aria-live="polite"></span>
+                <button id="flowNext" class="btn btn-sm btn-outline-primary" type="button">Next</button>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-4">
+        <div class="app-card h-100">
+            <div class="card-header"><h5>Protocols</h5></div>
+            <div class="card-body p-0 table-responsive">
+                <table class="table-app">
+                    <thead><tr><th>Protocol</th><th class="text-end">Flows</th><th class="text-end">Volume</th></tr></thead>
+                    <tbody id="flowProtocols"><tr><td colspan="3" class="text-center text-muted py-4">No Flow records yet</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<details class="app-card mt-3">
+    <summary class="card-header">Router setup</summary>
+    <div class="card-body">
+        <p>Set the destination to this application's reachable IPv4 address, then enable Traffic Flow on the router:</p>
+        <pre class="p-3 bg-light rounded">/ip traffic-flow set enabled=yes interfaces=all
+/ip traffic-flow target add dst-address=&lt;SERVER_IP&gt; port={{ flow_port }} version=9</pre>
+        <p class="small text-muted mb-0">The packet source must match this router's host or its configured exporter source IPv4. Allow UDP {{ flow_port }} from that router to this server.</p>
+    </div>
+</details>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+    const routerId = {{ router.id }};
+    let minutes = 5, page = 1, requestId = 0, controller;
+    let filters = new URLSearchParams();
+    const form = document.getElementById('flowFilters');
+    function size(bytes) {
+        let value = Number(bytes) || 0;
+        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        let i = 0;
+        while (value >= 1024 && i < units.length - 1) { value /= 1024; i++; }
+        return value.toFixed(value >= 100 || i === 0 ? 0 : 1) + ' ' + units[i];
+    }
+    function cell(row, value, isNumeric) {
+        const td = document.createElement('td');
+        td.textContent = value;
+        if (isNumeric) td.className = 'text-end';
+        row.appendChild(td);
+        return td;
+    }
+    function render(data) {
+        const banner = document.getElementById('flowStatus');
+        banner.className = 'alert ' + (data.fresh ? 'alert-success' : 'alert-warning');
+        banner.textContent = data.last_seen ?
+            `Last export ${data.age_seconds}s ago · ${data.fresh ? 'receiving' : 'stale'}` :
+            'No Flow packets received yet. Check the router target and UDP port.';
+        document.getElementById('flowRate').textContent = (data.average_bps / 1000000).toFixed(2) + ' Mbps';
+        document.getElementById('flowBytes').textContent = size(data.bytes);
+        document.getElementById('flowCount').textContent = Number(data.flows).toLocaleString();
+        document.getElementById('flowPackets').textContent = Number(data.packets).toLocaleString();
+        page = data.page;
+        document.getElementById('flowIpCount').textContent = `${data.total_ips} IPs`;
+        document.getElementById('flowPage').textContent = `Page ${data.page} of ${data.pages}`;
+        document.getElementById('flowPrev').disabled = data.page <= 1;
+        document.getElementById('flowNext').disabled = data.page >= data.pages;
+        const ips = document.getElementById('flowIps');
+        ips.replaceChildren();
+        if (!data.top_ips.length) {
+            const tr = document.createElement('tr');
+            const td = cell(tr, 'No Flow records in this period');
+            td.colSpan = 5; td.className = 'text-center text-muted py-4'; ips.appendChild(tr);
+        }
+        data.top_ips.forEach(ip => {
+            const tr = document.createElement('tr');
+            const td = document.createElement('td');
+            const link = document.createElement('a');
+            link.href = `/monitor_router/${routerId}/ip/${encodeURIComponent(ip.ip)}`;
+            link.textContent = ip.ip;
+            td.appendChild(link); tr.appendChild(td);
+            cell(tr, ip.scope);
+            cell(tr, size(ip.upload_bytes), true);
+            cell(tr, size(ip.download_bytes), true);
+            cell(tr, size(ip.upload_bytes + ip.download_bytes), true);
+            ips.appendChild(tr);
+        });
+        const protocols = document.getElementById('flowProtocols');
+        protocols.replaceChildren();
+        if (!data.protocols.length) {
+            const tr = document.createElement('tr');
+            const td = cell(tr, 'No Flow records in this period');
+            td.colSpan = 3; td.className = 'text-center text-muted py-4'; protocols.appendChild(tr);
+        }
+        data.protocols.forEach(proto => {
+            const tr = document.createElement('tr');
+            cell(tr, proto.name);
+            cell(tr, String(proto.flows), true);
+            cell(tr, size(proto.bytes), true);
+            protocols.appendChild(tr);
+        });
+    }
+    async function refresh() {
+        const current = ++requestId;
+        if (controller) controller.abort();
+        controller = new AbortController();
+        const params = new URLSearchParams(filters);
+        params.set('minutes', minutes); params.set('page', page);
+        try {
+            const response = await fetch(`/api/flow/${routerId}?${params}`, {signal: controller.signal});
+            if (response.redirected) throw new Error('Session expired. Please log in again.');
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.error || 'Flow data request failed');
+            if (current === requestId) render(payload.data);
+        } catch (error) {
+            if (error.name === 'AbortError' || current !== requestId) return;
+            const banner = document.getElementById('flowStatus');
+            banner.className = 'alert alert-danger';
+            banner.textContent = error.message || 'Unable to load Flow data.';
+        }
+    }
+    form.addEventListener('submit', event => {
+        event.preventDefault();
+        filters = new URLSearchParams(new FormData(form)); page = 1; refresh();
+    });
+    form.addEventListener('reset', () => { filters = new URLSearchParams(); page = 1; refresh(); });
+    document.getElementById('flowPrev').addEventListener('click', () => { page--; refresh(); });
+    document.getElementById('flowNext').addEventListener('click', () => { page++; refresh(); });
+    document.getElementById('flowPeriod').addEventListener('click', function (event) {
+        const button = event.target.closest('button[data-minutes]');
+        if (!button) return;
+        minutes = Number(button.dataset.minutes); page = 1;
+        document.querySelectorAll('#flowPeriod button').forEach(item => item.classList.toggle('active', item === button));
+        refresh();
+    });
+    render({{ overview|tojson }});
+    setInterval(refresh, 15000);
+})();
+</script>
+{% endblock %}

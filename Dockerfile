@@ -1,9 +1,9 @@
-FROM python:3.9-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
 # Install system dependencies (snmp tools are required by the SNMP collector)
-RUN apt-get update && apt-get install -y curl snmp && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends curl snmp && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
@@ -17,5 +17,6 @@ RUN sed -i 's/\r$//' docker-start.sh && chmod +x docker-start.sh
 RUN mkdir -p /app/data
 
 EXPOSE 8080
+EXPOSE 2055/udp
 
 CMD ["./docker-start.sh"]

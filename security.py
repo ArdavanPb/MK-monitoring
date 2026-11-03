@@ -162,7 +162,8 @@ SENSITIVE_KEYS = {
     "snmp_auth_pass",
     "snmp_priv_pass",
     "snmp_community",
-    "csrf_token",
+    "csrf_token", "token", "api_key", "secret", "authorization",
+    "action_config", "url", "webhook_url",
 }
 
 
@@ -171,9 +172,7 @@ def sanitize_audit_body(request):
     try:
         if request.is_json:
             data = request.get_json(silent=True)
-            if isinstance(data, dict):
-                return _redact_dict(data)
-            return str(data)[:500]
+            return _redact_dict(data)
 
         form = request.form
         if form:
@@ -185,10 +184,11 @@ def sanitize_audit_body(request):
 
 
 def _redact_dict(data):
-    redacted = {}
-    for key, value in data.items():
-        if key in SENSITIVE_KEYS:
-            redacted[key] = "[REDACTED]"
-        else:
-            redacted[key] = value
-    return str(redacted)[:500]
+    def redact(value):
+        if isinstance(value, dict):
+            return {key: "[REDACTED]" if str(key).lower() in SENSITIVE_KEYS
+                    else redact(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [redact(item) for item in value]
+        return value
+    return str(redact(data))[:500]

@@ -90,10 +90,23 @@
                         <input type="hidden" name="snmp_version" value="2">
                     </div>
 
+                    <div class="form-section-title"><i class="bi bi-diagram-3 me-1"></i>Traffic Flow</div>
+                    <div class="form-check form-switch mb-2">
+                        <input class="form-check-input" type="checkbox" id="flow_enabled" name="flow_enabled" value="1"
+                               {% if r and r.flow_enabled %}checked{% endif %}>
+                        <label class="form-check-label" for="flow_enabled">Receive NetFlow v5/v9 traffic from this router</label>
+                    </div>
+                    <div id="flowFields" class="border rounded p-3 mb-3 bg-light" style="display:none;">
+                        <label for="flow_source_ip" class="form-label">Exporter source IPv4 (optional)</label>
+                        <input type="text" class="form-control" id="flow_source_ip" name="flow_source_ip"
+                               value="{{ r.flow_source_ip if r else '' }}" placeholder="Defaults to router host">
+                        <div class="form-text">Set this when Flow packets leave the router from an address different from its management host. Send NetFlow v5/v9 to this server on UDP {{ flow_port }}.</div>
+                    </div>
+
                     <div class="alert alert-info">
                         <i class="bi bi-info-circle me-1"></i>
                         <small>
-                            The API service must be enabled on the router and the user must have API permissions.
+                            API and SNMP are optional when Traffic Flow is enabled. Flow needs a router target pointing to this server on UDP {{ flow_port }}.
                             <a href="#" data-bs-toggle="modal" data-bs-target="#troubleshootingModal">Having connection issues?</a>
                         </small>
                     </div>
@@ -116,9 +129,11 @@
     function syncSectionVisibility() {
         document.getElementById('apiFields').style.display = document.getElementById('api_enabled').checked ? 'block' : 'none';
         document.getElementById('snmpFields').style.display = document.getElementById('snmp_enabled').checked ? 'block' : 'none';
+        document.getElementById('flowFields').style.display = document.getElementById('flow_enabled').checked ? 'block' : 'none';
     }
     document.getElementById('api_enabled').addEventListener('change', syncSectionVisibility);
     document.getElementById('snmp_enabled').addEventListener('change', syncSectionVisibility);
+    document.getElementById('flow_enabled').addEventListener('change', syncSectionVisibility);
     syncSectionVisibility();
 </script>
 {% endblock %}

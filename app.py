@@ -5,6 +5,7 @@ db.py, security helpers in security.py, and RouterOS connectivity in
 routeros_client.py.
 """
 import json
+import ipaddress
 import logging
 from datetime import datetime
 from functools import wraps
@@ -15,6 +16,7 @@ from flask import (
 
 import config
 import db
+import flow_service
 import security
 import services
 import routeros_client
@@ -27,10 +29,16 @@ logger = logging.getLogger("app")
 def create_app():
     app = Flask(__name__)
     app.secret_key = config.SECRET_KEY
+    app.config.update(
+        SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
+        SESSION_COOKIE_SECURE=config.SESSION_COOKIE_SECURE,
+        MAX_CONTENT_LENGTH=1024 * 1024,
+    )
 
     app.jinja_env.filters["format_bytes"] = utils.format_bytes
     app.jinja_env.filters["format_duration"] = utils.format_duration
     app.jinja_env.globals["csrf_token"] = security.generate_csrf_token
+    app.jinja_env.globals["flow_port"] = config.FLOW_PORT
 
     _register_hooks(app)
     _register_routes(app)
@@ -41,6 +49,15 @@ def create_app():
 
 
 def _register_hooks(app):
+    @app.after_request
+    def security_headers(response):
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "same-origin"
+        if request.endpoint != "static":
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
     @app.before_request
     def csrf_protect():
         if request.method in ("POST", "PUT", "DELETE", "PATCH"):
@@ -48,7 +65,7 @@ def _register_hooks(app):
                 if request.path.startswith("/api/"):
                     return jsonify({"success": False, "error": "CSRF token missing or invalid"}), 400
                 flash("Your session expired or the request was rejected. Please try again.", "error")
-                return redirect(request.referrer or url_for("login"))
+                return redirect(url_for("login"))
 
     @app.before_request
     def audit_middleware():
@@ -142,6 +159,7 @@ def _register_routes(app):
             if user and security.verify_password(password, user["password_hash"]):
                 if security.is_legacy_hash(user["password_hash"]):
                     upgrade_user_hash(user["id"], password)
+                session.clear()
                 session["user_id"] = user["id"]
                 session["username"] = user["username"]
                 session["role"] = user["role"] or "viewer"
@@ -199,7 +217,8 @@ def _register_routes(app):
     @login_required
     def index():
         rdata = []
-        for router in services.list_routers():
+        routers = services.list_routers()
+        for router in routers:
             router_id = router["id"]
             name = router["name"]
             host = router["host"]
@@ -207,7 +226,21 @@ def _register_routes(app):
             snmp_enabled = router.get("snmp_enabled", 0)
 
             cache = services.get_status_cache(router_id)
-            if cache and cache["status"] == "online" and cache["router_info"]:
+            cache_age = flow_service.timestamp_age_seconds(cache["last_checked"]) if cache else None
+            snmp_seen = services.get_snmp_last_seen(router_id) if snmp_enabled else None
+            snmp_age = flow_service.timestamp_age_seconds(snmp_seen)
+            snmp_fresh = snmp_age is not None and snmp_age <= 180
+            snmp_state = services.get_snmp_poll_state(router_id) if snmp_enabled else None
+            if snmp_state:
+                state_age = flow_service.timestamp_age_seconds(snmp_state["checked_at"])
+                snmp_fresh = (snmp_fresh and snmp_state["status"] == "online"
+                              and state_age is not None and state_age <= 180)
+            elif (cache and cache["source_type"] == "SNMP" and cache["status"] == "offline"
+                  and cache_age is not None and cache_age <= 180
+                  and (not snmp_seen or cache["last_checked"] >= snmp_seen)):
+                snmp_fresh = False
+
+            if cache and cache["status"] == "online" and cache["router_info"] and cache_age is not None and cache_age <= 180:
                 try:
                     info = json.loads(cache["router_info"])
                     source_type = cache["source_type"] or "API"
@@ -224,7 +257,7 @@ def _register_routes(app):
                 except (ValueError, KeyError):
                     pass
 
-            if snmp_enabled:
+            if snmp_enabled and snmp_fresh:
                 si = services.get_snmp_detailed_info(router)
                 res = si.get("resources", {})
                 src_info = si.get("_source", {})
@@ -254,11 +287,10 @@ def _register_routes(app):
                     "source_type": "SNMP",
                 })
             elif router.get("username") and router.get("password"):
-                api, connection, error = routeros_client.connect_to_router(
-                    host, port, router["username"], router["password"]
-                )
-                if api:
-                    try:
+                with routeros_client.router_connection(
+                    router_id, host, port, router["username"], router["password"]
+                ) as (api, error):
+                    if api is not None:
                         info = routeros_client.get_router_info(api)
                         services.set_status_cache(router_id, "online", info, "API", port=port)
                         rdata.append({
@@ -266,21 +298,61 @@ def _register_routes(app):
                             "display_port": port, "info": info, "status": "online",
                             "source_type": "API",
                         })
-                    finally:
-                        connection.disconnect()
-                else:
-                    rdata.append({
-                        "id": router_id, "name": name, "host": host, "port": port,
-                        "display_port": port, "info": {"error": error or "Connection failed"},
-                        "status": "offline", "source_type": "API",
-                    })
+                    else:
+                        rdata.append({
+                            "id": router_id, "name": name, "host": host, "port": port,
+                            "display_port": port, "info": {"error": error or "Connection failed"},
+                            "status": "offline", "source_type": "API",
+                        })
             else:
                 rdata.append({
                     "id": router_id, "name": name, "host": host, "port": port,
                     "display_port": port, "info": {"error": "No connection method"},
                     "status": "offline", "source_type": "N/A",
                 })
-        return render_template("index.html", routers=rdata)
+        by_id = {router["id"]: router for router in routers}
+        for card in rdata:
+            router = by_id[card["id"]]
+            card["api_enabled"] = bool(router.get("username"))
+            card["snmp_enabled"] = bool(router.get("snmp_enabled"))
+            card["flow_enabled"] = bool(router.get("flow_enabled"))
+            snmp_seen = services.get_snmp_last_seen(card["id"]) if card["snmp_enabled"] else None
+            snmp_state = services.get_snmp_poll_state(card["id"]) if card["snmp_enabled"] else None
+            card["snmp_age"] = flow_service.timestamp_age_seconds(snmp_seen)
+            state_age = flow_service.timestamp_age_seconds(snmp_state["checked_at"]) if snmp_state else None
+            card["snmp_fresh"] = (card["snmp_age"] is not None and card["snmp_age"] <= 180
+                                  and (snmp_state is None or
+                                       (snmp_state["status"] == "online" and state_age is not None and state_age <= 180)))
+            card["snmp_state"] = "online" if card["snmp_fresh"] else (
+                "offline" if snmp_state and snmp_state["status"] == "offline" and state_age is not None and state_age <= 180 else "stale / waiting")
+            card["flow"] = flow_service.snapshot(card["id"]) if card["flow_enabled"] else None
+            card["api_issue"] = card["info"].get("error") if card["source_type"] == "API" else None
+            if card["flow_enabled"] and not card["api_enabled"] and not card["snmp_enabled"]:
+                card["display_port"] = config.FLOW_PORT
+            if card["flow"] and card["flow"]["fresh"] and card["status"] != "online":
+                card["status"] = "online"
+                card["source_type"] = "FLOW"
+                card["info"] = {"name": card["name"], "uptime": "N/A", "memory_usage_percent": "N/A", "cpu_load": "N/A", "version": "N/A"}
+            elif card["flow_enabled"] and not card["api_enabled"] and not card["snmp_enabled"]:
+                card["source_type"] = "FLOW"
+                card["status"] = "unknown"
+                card["info"] = {"error": "Waiting for recent Flow packets"}
+            if not card["api_enabled"] and card["status"] != "online" and card["snmp_enabled"]:
+                card["source_type"] = "SNMP"
+                card["display_port"] = router.get("snmp_port", 161)
+                if snmp_state and snmp_state["status"] == "offline" and state_age is not None and state_age <= 180:
+                    card["status"] = "offline"
+                    card["info"] = {"error": "SNMP poll failed"}
+                else:
+                    card["status"] = "unknown"
+                    card["info"] = {"error": "Waiting for a fresh SNMP sample"}
+        conn = db.get_connection()
+        try:
+            active_alerts = conn.execute("SELECT COUNT(*) FROM alert_events WHERE status='active'").fetchone()[0]
+        finally:
+            conn.close()
+        flowing_count = sum(bool(card["flow"] and card["flow"]["fresh"]) for card in rdata)
+        return render_template("index.html", routers=rdata, active_alerts=active_alerts, flowing_count=flowing_count)
 
     @app.route("/add_router", methods=["GET", "POST"])
     @login_required
@@ -292,6 +364,8 @@ def _register_routes(app):
             host = form.get("host", "")
             api_enabled = form.get("api_enabled", 0, type=int)
             snmp_enabled = form.get("snmp_enabled", 0, type=int)
+            flow_enabled = form.get("flow_enabled", 0, type=int)
+            flow_source_ip = form.get("flow_source_ip", "").strip()
 
             port = form.get("port", 8728, type=int)
             username = form.get("username", "")
@@ -309,7 +383,19 @@ def _register_routes(app):
             errors = []
             api_connection = None
 
-            if api_enabled:
+            if not name.strip() or not host.strip():
+                errors.append("Router name and host are required")
+            if not (api_enabled or snmp_enabled or flow_enabled):
+                errors.append("Enable at least one monitoring source")
+            if not (1 <= port <= 65535 and 1 <= sp <= 65535):
+                errors.append("Ports must be between 1 and 65535")
+            if flow_enabled and flow_source_ip:
+                try:
+                    ipaddress.IPv4Address(flow_source_ip)
+                except ipaddress.AddressValueError:
+                    errors.append("Flow source must be an IPv4 address")
+
+            if api_enabled and not errors:
                 api, api_connection, error = routeros_client.connect_to_router(host, port, username, password)
                 if not api:
                     errors.append(f"API: {error}")
@@ -318,11 +404,10 @@ def _register_routes(app):
                 password = ""
 
             if snmp_enabled:
-                if sv == 2:
-                    if not routeros_client.test_snmp_connection(host, sc, 2, sp):
-                        errors.append(f"SNMP: Connection failed to {host}:{sp}")
-                else:
+                if sv != 2:
                     errors.append("SNMP v3 not supported")
+                elif not errors and not routeros_client.test_snmp_connection(host, sc, 2, sp):
+                    errors.append(f"SNMP: Connection failed to {host}:{sp}")
             else:
                 sc = "public"
                 sv = 2
@@ -330,11 +415,14 @@ def _register_routes(app):
                 su = sap = sapw = spp = sppw = ""
 
             if errors:
+                if api_connection:
+                    api_connection.disconnect()
                 for error in errors:
                     flash(error, "error")
                 return render_template("add_router.html", r={
                     "name": name, "host": host, "port": port, "username": username,
                     "api_enabled": api_enabled, "snmp_enabled": snmp_enabled,
+                    "flow_enabled": flow_enabled, "flow_source_ip": flow_source_ip,
                     "snmp_community": sc, "snmp_version": sv, "snmp_port": sp,
                     "snmp_user": su, "snmp_auth_protocol": sap, "snmp_auth_pass": sapw,
                     "snmp_priv_protocol": spp, "snmp_priv_pass": sppw,
@@ -346,6 +434,7 @@ def _register_routes(app):
                 "snmp_version": sv, "snmp_port": sp, "snmp_user": su,
                 "snmp_auth_protocol": sap, "snmp_auth_pass": sapw,
                 "snmp_priv_protocol": spp, "snmp_priv_pass": sppw,
+                "flow_enabled": flow_enabled, "flow_source_ip": flow_source_ip,
             })
             if api_connection:
                 api_connection.disconnect()
@@ -368,6 +457,8 @@ def _register_routes(app):
             host = form.get("host", "")
             api_enabled = form.get("api_enabled", 0, type=int)
             snmp_enabled = form.get("snmp_enabled", 0, type=int)
+            flow_enabled = form.get("flow_enabled", 0, type=int)
+            flow_source_ip = form.get("flow_source_ip", "").strip()
 
             api_port = form.get("port", 8728, type=int)
             username = form.get("username", "")
@@ -386,24 +477,39 @@ def _register_routes(app):
             errors = []
             api_connection = None
 
-            if api_enabled:
+            if not name.strip() or not host.strip():
+                errors.append("Router name and host are required")
+            if not (api_enabled or snmp_enabled or flow_enabled):
+                errors.append("Enable at least one monitoring source")
+            if not (1 <= api_port <= 65535 and 1 <= sp <= 65535):
+                errors.append("Ports must be between 1 and 65535")
+            if flow_enabled and flow_source_ip:
+                try:
+                    ipaddress.IPv4Address(flow_source_ip)
+                except ipaddress.AddressValueError:
+                    errors.append("Flow source must be an IPv4 address")
+
+            if api_enabled and not errors:
                 api, api_connection, error = routeros_client.connect_to_router(host, api_port, username, password)
                 if not api:
                     errors.append(f"API: {error}")
             else:
-                username = router["username"]
-                password = router["password"]
-                api_port = router["port"]
+                if not api_enabled:
+                    username = ""
+                    password = ""
 
             if snmp_enabled and sv != 2:
                 errors.append("SNMP v3 unsupported")
 
             if errors:
+                if api_connection:
+                    api_connection.disconnect()
                 for error in errors:
                     flash(error, "error")
                 return render_template("add_router.html", edit_mode=True, r={
                     "name": name, "host": host, "port": api_port, "username": username,
                     "api_enabled": api_enabled, "snmp_enabled": snmp_enabled,
+                    "flow_enabled": flow_enabled, "flow_source_ip": flow_source_ip,
                     "snmp_community": sc, "snmp_version": sv, "snmp_port": sp,
                     "snmp_user": su, "snmp_auth_protocol": sap, "snmp_auth_pass": sapw,
                     "snmp_priv_protocol": spp, "snmp_priv_pass": sppw,
@@ -415,7 +521,9 @@ def _register_routes(app):
                 "snmp_version": sv, "snmp_port": sp, "snmp_user": su,
                 "snmp_auth_protocol": sap, "snmp_auth_pass": sapw,
                 "snmp_priv_protocol": spp, "snmp_priv_pass": sppw,
+                "flow_enabled": flow_enabled, "flow_source_ip": flow_source_ip,
             })
+            routeros_client.close_connection(router_id)
             if api_connection:
                 api_connection.disconnect()
             flash("Router updated!", "success")
@@ -425,6 +533,8 @@ def _register_routes(app):
             "name": router["name"], "host": router["host"], "port": router["port"],
             "username": router["username"], "api_enabled": 1 if router["username"] else 0,
             "snmp_enabled": router.get("snmp_enabled", 0),
+            "flow_enabled": router.get("flow_enabled", 0),
+            "flow_source_ip": router.get("flow_source_ip", ""),
             "snmp_community": router.get("snmp_community", "public"),
             "snmp_version": router.get("snmp_version", 2),
             "snmp_port": router.get("snmp_port", 161),
@@ -440,6 +550,7 @@ def _register_routes(app):
     @role_required("admin")
     def delete_router(router_id):
         services.delete_router(router_id)
+        routeros_client.close_connection(router_id)
         flash("Router deleted!", "success")
         return redirect(url_for("index"))
 
@@ -448,13 +559,15 @@ def _register_routes(app):
     @role_required("operator")
     def refresh_router(router_id):
         router = services.get_router(router_id)
-        if router:
+        if router and router.get("username") and router.get("password"):
             status, _ = services.update_router_status_cache(
                 router_id, router["name"], router["host"], router["port"],
                 router["username"], router["password"],
             )
             flash("Refreshed!" if status == "online" else "Failed to connect",
                   "success" if status == "online" else "error")
+        elif router:
+            flash("API is not configured for this router", "warning")
         return redirect(url_for("index"))
 
     # ─── Monitoring ───────────────────────────────────────────────────────
@@ -482,6 +595,7 @@ def _register_routes(app):
         rd = {
             "id": router["id"], "name": router["name"], "host": router["host"],
             "port": router["port"], "snmp_enabled": router.get("snmp_enabled", 0),
+            "flow_enabled": router.get("flow_enabled", 0), "api_enabled": bool(router.get("username")),
         }
         alerts = services.get_alerts(router_id, 50)
         empty_stats = {"total": 0, "categories": {}, "severities": {}}
@@ -496,19 +610,17 @@ def _register_routes(app):
                 return render_monitor(router, rd, si, empty_stats, alerts, [], "SNMP", src_info.get("port", 161), "SNMP", selected_tab)
 
         if not router.get("username") or not router.get("password"):
+            if router.get("flow_enabled"):
+                return redirect(url_for("flow_page", router_id=router_id))
             return render_template("error.html", error="No connection method configured"), 200
 
-        api, connection, error = routeros_client.connect_to_router(
-            router["host"], router["port"], router["username"], router["password"]
-        )
-        if not api:
-            return render_template("error.html", error=error), 200
-
-        try:
+        with routeros_client.router_connection(
+            router_id, router["host"], router["port"], router["username"], router["password"]
+        ) as (api, error):
+            if api is None:
+                return render_template("error.html", error=error), 200
             detailed = routeros_client.get_detailed_router_info(api)
             log_stats = services.get_log_statistics(detailed.get("logs", []))
-        finally:
-            connection.disconnect()
 
         network_ips = services.get_network_ips(router)
         backups = services.get_backup_list(router_id)
@@ -548,11 +660,44 @@ def _register_routes(app):
             "port": router["port"], "snmp_enabled": router.get("snmp_enabled", 0),
         }
         header = services.get_ip_header(router, ip)
-        totals = services.get_ip_traffic_totals(router_id, ip)
+        flow_ip = flow_service.ip_summary(router_id, ip) if router.get("flow_enabled") else None
+        totals = services.get_ip_traffic_totals(router_id, ip) if flow_ip is None else {
+            **flow_ip, "has_data": bool(flow_ip["flows"]),
+        }
         return render_template(
             "ip_details.html", router=rd, ip=ip, header=header, totals=totals,
             history_periods=services._HISTORY_PERIODS,
+            flow_ip=flow_ip,
         )
+
+    @app.route("/flow/<int:router_id>")
+    @login_required
+    def flow_page(router_id):
+        router = services.get_router(router_id)
+        if not router or not router.get("flow_enabled"):
+            return render_template("error.html", error="Traffic Flow is not enabled for this router"), 404
+        return render_template(
+            "flow.html", router={"id": router_id, "name": router["name"], "host": router["host"]},
+            overview=flow_service.overview(router_id),
+        )
+
+    @app.route("/api/flow/<int:router_id>")
+    @login_required
+    def api_flow(router_id):
+        router = services.get_router(router_id)
+        if not router or not router.get("flow_enabled"):
+            return jsonify({"success": False, "error": "Traffic Flow is not enabled"}), 404
+        try:
+            data = flow_service.overview(
+                router_id, int(request.args.get("minutes", "5")),
+                src=request.args.get("src", ""), dst=request.args.get("dst", ""),
+                search=request.args.get("search", ""), sort=request.args.get("sort", "total"),
+                direction=request.args.get("direction", "desc"), view=request.args.get("view", "all"),
+                page=int(request.args.get("page", "1")), per_page=int(request.args.get("per_page", "50")),
+            )
+        except ValueError as exc:
+            return jsonify({"success": False, "error": str(exc)}), 400
+        return jsonify({"success": True, "data": data})
 
     @app.route("/api/ip/<int:router_id>/<ip>/history")
     @login_required
@@ -563,10 +708,15 @@ def _register_routes(app):
         if not router:
             return jsonify({"success": False, "error": "Router not found"}), 404
         period = request.args.get("period", "1h")
+        if period not in services._HISTORY_PERIODS:
+            return jsonify({"success": False, "error": "Invalid period"}), 400
+        if router.get("flow_enabled"):
+            result = flow_service.ip_history(router_id, ip, services._HISTORY_PERIODS[period])
+            return jsonify({"success": True, "data": {**result, "period": period}})
         result = services.get_ip_bandwidth_history(router_id, ip, period)
         if isinstance(result, dict) and result.get("error"):
             return jsonify({"success": False, "error": result["error"]}), 400
-        return jsonify({"success": True, "data": {"points": result, "period": period}})
+        return jsonify({"success": True, "data": {"points": result, "period": period, "source": "api", "note": "RouterOS API counter estimates; samples arrive about once per minute."}})
 
     @app.route("/api/ip/<int:router_id>/<ip>/connections")
     @login_required
@@ -695,20 +845,18 @@ def _register_routes(app):
             flash("Not found", "error")
             return redirect(url_for("index"))
 
-        api, connection, error = routeros_client.connect_to_router(
-            router["host"], router["port"], router["username"], router["password"]
-        )
-        if api:
-            try:
-                logs = routeros_client.safe_api_call(api, "/log")["data"] or []
-                saved = services.save_router_logs(router_id, logs)
-                services.cleanup_old_logs(router_id)
-                if saved > 0:
-                    flash(f"Updated {saved} logs", "success")
-            except Exception as exc:  # noqa: BLE001
-                logger.error("Log fetch: %s", exc)
-            finally:
-                connection.disconnect()
+        with routeros_client.router_connection(
+            router_id, router["host"], router["port"], router["username"], router["password"]
+        ) as (api, error):
+            if api is not None:
+                try:
+                    logs = routeros_client.safe_api_call(api, "/log")["data"] or []
+                    saved = services.save_router_logs(router_id, logs)
+                    services.cleanup_old_logs(router_id)
+                    if saved > 0:
+                        flash(f"Updated {saved} logs", "success")
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("Log fetch: %s", exc)
 
         pagination = services.get_paginated_logs(router_id, page, 50, severity, search)
 

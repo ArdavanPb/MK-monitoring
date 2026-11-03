@@ -1,4 +1,6 @@
 #!/bin/sh
+set -eu
+umask 077
 
 echo "Starting MK-Monitoring in Docker..."
 
@@ -15,6 +17,9 @@ ALERT_PID=$!
 
 python bandwidth_collector.py &
 BANDWIDTH_PID=$!
+
+python flow_collector.py &
+FLOW_PID=$!
 
 (
 while true; do
@@ -39,11 +44,14 @@ BACKUP_PID=$!
 
 cleanup() {
     echo "Shutting down..."
-    kill $SNMP_PID $ALERT_PID $BANDWIDTH_PID $BACKUP_PID 2>/dev/null
+    kill $SNMP_PID $ALERT_PID $BANDWIDTH_PID $FLOW_PID $BACKUP_PID ${WEB_PID:-} 2>/dev/null || true
     wait
     echo "All stopped"
 }
-trap cleanup TERM INT
+trap cleanup EXIT
+trap 'exit 0' TERM INT
 
-echo "Starting Flask app..."
-python app.py
+echo "Starting web server..."
+gunicorn --bind "${HOST:-0.0.0.0}:${PORT:-8080}" --workers 1 --threads 4 --timeout 120 app:app &
+WEB_PID=$!
+wait "$WEB_PID"

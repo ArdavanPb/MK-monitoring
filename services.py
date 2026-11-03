@@ -14,11 +14,16 @@ from collections import OrderedDict
 
 import config
 import db
+import flow_service
 import security
 import utils
 import routeros_client
 
 logger = logging.getLogger("app")
+
+
+def _utc_now():
+    return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
 
 
 # ─── Router repository ────────────────────────────────────────────────────
@@ -66,14 +71,15 @@ def create_router(data):
             """INSERT INTO routers
                (name, host, port, username, password, snmp_enabled, snmp_community,
                 snmp_version, snmp_port, snmp_user, snmp_auth_protocol, snmp_auth_pass,
-                snmp_priv_protocol, snmp_priv_pass)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                snmp_priv_protocol, snmp_priv_pass, flow_enabled, flow_source_ip)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 data["name"], data["host"], data["port"], data["username"], data["password"],
                 data.get("snmp_enabled", 0), data.get("snmp_community", "public"),
                 data.get("snmp_version", 2), data.get("snmp_port", 161), data.get("snmp_user", ""),
                 data.get("snmp_auth_protocol", "MD5"), data.get("snmp_auth_pass", ""),
                 data.get("snmp_priv_protocol", "DES"), data.get("snmp_priv_pass", ""),
+                data.get("flow_enabled", 0), data.get("flow_source_ip", ""),
             ),
         )
         conn.commit()
@@ -90,16 +96,18 @@ def update_router(router_id, data):
             """UPDATE routers SET name=?, host=?, port=?, username=?, password=?,
                snmp_enabled=?, snmp_community=?, snmp_version=?, snmp_port=?,
                snmp_user=?, snmp_auth_protocol=?, snmp_auth_pass=?,
-               snmp_priv_protocol=?, snmp_priv_pass=? WHERE id=?""",
+               snmp_priv_protocol=?, snmp_priv_pass=?, flow_enabled=?, flow_source_ip=? WHERE id=?""",
             (
                 data["name"], data["host"], data["port"], data["username"], data["password"],
                 data.get("snmp_enabled", 0), data.get("snmp_community", "public"),
                 data.get("snmp_version", 2), data.get("snmp_port", 161), data.get("snmp_user", ""),
                 data.get("snmp_auth_protocol", "MD5"), data.get("snmp_auth_pass", ""),
                 data.get("snmp_priv_protocol", "DES"), data.get("snmp_priv_pass", ""),
+                data.get("flow_enabled", 0), data.get("flow_source_ip", ""),
                 router_id,
             ),
         )
+        conn.execute("DELETE FROM router_status_cache WHERE router_id=?", (router_id,))
         conn.commit()
     finally:
         conn.close()
@@ -113,6 +121,8 @@ def delete_router(router_id):
             "ip_bandwidth_data", "interface_bandwidth_data", "router_status_cache",
             "router_logs", "log_retention_settings", "snmp_system_metrics",
             "snmp_interface_metrics", "alert_rules",
+            "snmp_poll_state",
+            "flow_datagrams",
         )
         for table in tables:
             conn.execute(f"DELETE FROM {table} WHERE router_id=?", (router_id,))
@@ -142,25 +152,23 @@ def migrate_plaintext_credentials():
 # ─── Status cache ─────────────────────────────────────────────────────────
 
 def update_router_status_cache(router_id, name, host, port, username, password):
-    api, connection, error = routeros_client.connect_to_router(host, port, username, password)
-    if api:
-        try:
+    with routeros_client.router_connection(router_id, host, port, username, password) as (api, error):
+        if api is not None:
             info = routeros_client.get_router_info(api)
             status = "online"
             router_info = json.dumps(info)
-        finally:
-            connection.disconnect()
-    else:
-        status = "offline"
-        router_info = json.dumps({"error": error or "Connection failed"})
+        else:
+            status = "offline"
+            router_info = json.dumps({"error": error or "Connection failed"})
 
     conn = db.get_connection()
     try:
+        conn.execute("DELETE FROM router_status_cache WHERE router_id=?", (router_id,))
         conn.execute(
             """INSERT OR REPLACE INTO router_status_cache
                (router_id, status, last_checked, router_info, source_type, api_port)
                VALUES (?,?,?,?,?,?)""",
-            (router_id, status, datetime.datetime.now(), router_info, "API", port),
+            (router_id, status, _utc_now(), router_info, "API", port),
         )
         conn.commit()
     finally:
@@ -172,9 +180,30 @@ def get_status_cache(router_id):
     conn = db.get_connection()
     try:
         row = conn.execute(
-            "SELECT status, router_info, source_type, snmp_port, api_port "
+            "SELECT status, last_checked, router_info, source_type, snmp_port, api_port "
             "FROM router_status_cache WHERE router_id=? ORDER BY last_checked DESC LIMIT 1",
             (router_id,),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_snmp_last_seen(router_id):
+    conn = db.get_connection()
+    try:
+        return conn.execute(
+            "SELECT MAX(timestamp) FROM snmp_system_metrics WHERE router_id=?", (router_id,)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+
+def get_snmp_poll_state(router_id):
+    conn = db.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT status, checked_at FROM snmp_poll_state WHERE router_id=?", (router_id,)
         ).fetchone()
         return dict(row) if row else None
     finally:
@@ -184,11 +213,12 @@ def get_status_cache(router_id):
 def set_status_cache(router_id, status, info, source_type, port=None, snmp_port=None):
     conn = db.get_connection()
     try:
+        conn.execute("DELETE FROM router_status_cache WHERE router_id=?", (router_id,))
         conn.execute(
             """INSERT OR REPLACE INTO router_status_cache
                (router_id, status, last_checked, router_info, source_type, snmp_port, api_port)
                VALUES (?,?,?,?,?,?,?)""",
-            (router_id, status, datetime.datetime.now(), json.dumps(info), source_type, snmp_port, port),
+            (router_id, status, _utc_now(), json.dumps(info), source_type, snmp_port, port),
         )
         conn.commit()
     finally:
@@ -369,6 +399,7 @@ def collect_interface_bandwidth_data(router_id, api):
 
 
 _HISTORY_PERIODS = {
+    "1m": 1, "5m": 5, "30m": 30,
     "1h": 60, "3h": 180, "6h": 360, "12h": 720,
     "24h": 1440, "3d": 4320, "1w": 10080,
 }
@@ -423,6 +454,7 @@ NETWORK_IP_SOURCE_COLORS = {
     "DHCP": "cyan",
     "Neighbor": "blue",
     "Connection": "amber",
+    "Flow": "blue",
 }
 
 _network_ips_cache = {}
@@ -456,39 +488,37 @@ def get_network_ips(router):
     Returns {"records": [...], "missing_sources": [...], "error": str|None}.
     """
     router_id = router["id"]
-    if not router.get("username") or not router.get("password"):
-        return {"records": [], "missing_sources": [], "error": "No API credentials configured"}
-
     with _network_ips_lock:
         entry = _network_ips_cache.get(router_id)
         if entry and time.time() - entry[0] < NETWORK_IPS_CACHE_TTL:
             return entry[1]
 
-    api, connection, error = routeros_client.connect_to_router(
-        router["host"], router["port"], router["username"], router["password"]
-    )
-    if not api:
-        return {"records": [], "missing_sources": [], "error": error or "Connection failed"}
-
     missing_sources = []
+    api_error = None
+    addresses = arp_entries = neighbors = connections = leases = interfaces = []
+    if router.get("username") and router.get("password"):
+        with routeros_client.router_connection(
+            router_id, router["host"], router["port"], router["username"], router["password"]
+        ) as (api, error):
+            if api is None:
+                api_error = error or "Connection failed"
+                missing_sources.append("API")
+            else:
+                def fetch(name, path):
+                    result = routeros_client.safe_api_call(api, path)
+                    if result["error"]:
+                        missing_sources.append(name)
+                        return []
+                    return result["data"] or []
 
-    def fetch(name, path):
-        result = routeros_client.safe_api_call(api, path)
-        if result["error"]:
-            missing_sources.append(name)
-            return []
-        return result["data"] or []
-
-    try:
-        addresses = fetch("address", "/ip/address")
-        arp_entries = fetch("arp", "/ip/arp")
-        neighbors = fetch("neighbor", "/ip/neighbor")
-        connections = fetch("connection", "/ip/firewall/connection")
-        leases = fetch("dhcp_lease", "/ip/dhcp-server/lease")
-        interfaces = fetch("interface", "/interface")
-    finally:
-        if connection:
-            connection.disconnect()
+                addresses = fetch("address", "/ip/address")
+                arp_entries = fetch("arp", "/ip/arp")
+                neighbors = fetch("neighbor", "/ip/neighbor")
+                connections = fetch("connection", "/ip/firewall/connection")
+                leases = fetch("dhcp_lease", "/ip/dhcp-server/lease")
+                interfaces = fetch("interface", "/interface")
+    else:
+        api_error = "No API credentials configured"
 
     interface_running = {}
     for iface in interfaces:
@@ -574,6 +604,11 @@ def get_network_ips(router):
         if entry.get("status"):
             lease_status[ip] = entry["status"]
 
+    # Flow adds recently observed local IPs even when API discovery is down.
+    if router.get("flow_enabled"):
+        for ip in flow_service.recent_local_ips(router_id):
+            _record(ip)["sources"].add("Flow")
+
     # Derive a display status + badge color per merged IP, and classify each as
     # local or external (0.0.0.0 / broadcast / multicast are dropped).
     records = []
@@ -596,6 +631,8 @@ def get_network_ips(router):
             status, color = "Reachable", "green"
         elif "DHCP" in rec["sources"]:
             status, color = (lease_status.get(ip) or "dhcp").title(), "amber"
+        elif "Flow" in rec["sources"]:
+            status, color = "Observed", "blue"
         else:
             status, color = "Unknown", "gray"
         records.append({
@@ -611,7 +648,7 @@ def get_network_ips(router):
 
     records.sort(key=lambda r: _ip_sort_key(r["ip"]))
 
-    result = {"records": records, "missing_sources": missing_sources, "error": None}
+    result = {"records": records, "missing_sources": missing_sources, "error": api_error}
     with _network_ips_lock:
         _network_ips_cache[router_id] = (time.time(), result)
     return result
@@ -649,30 +686,32 @@ def get_interface_traffic(router_id):
         if entry and time.time() - entry[0] < INTERFACE_TRAFFIC_CACHE_TTL:
             return entry[1]
 
-    api, connection, error = routeros_client.connect_to_router(
-        router["host"], router["port"], router["username"], router["password"]
-    )
-    if not api:
-        return {"interfaces": [], "error": error or "Connection failed"}
-
-    try:
+    with routeros_client.router_connection(
+        router_id, router["host"], router["port"], router["username"], router["password"]
+    ) as (api, error):
+        if api is None:
+            return {"interfaces": [], "error": error or "Connection failed"}
         interfaces_result = routeros_client.safe_api_call(api, "/interface")
-        monitor_result = routeros_client.safe_api_call_command(
-            api, "/interface", "monitor-traffic", {"once": "yes"}
-        )
-    finally:
-        if connection:
-            connection.disconnect()
+        interfaces = interfaces_result["data"] or []
 
-    interfaces = interfaces_result["data"] or []
-    monitor_items = monitor_result.get("data") or []
-    if isinstance(monitor_items, dict):
-        monitor_items = [monitor_items]
-    monitor_rates = {}
-    for item in monitor_items:
-        name = item.get("name")
-        if name:
-            monitor_rates[name] = item
+        # RouterOS v7 rejects the bare "/interface monitor-traffic once" form
+        # with "missing =interface=", so collect each running interface's live
+        # rate individually on the same pooled connection. Down interfaces are
+        # skipped (no live rate).
+        monitor_rates = {}
+        for iface in interfaces:
+            name = iface.get("name")
+            if not name or str(iface.get("running", "")).lower() != "true":
+                continue
+            mon = routeros_client.safe_api_call_command(
+                api, "/interface", "monitor-traffic", {"interface": name, "once": "yes"}
+            )
+            items = mon.get("data") or []
+            if isinstance(items, dict):
+                items = [items]
+            for item in items:
+                rate_name = item.get("name") or name
+                monitor_rates[rate_name] = item
 
     # Cumulative totals: prefer the collector's latest sample, else live counters.
     totals = {}
@@ -848,17 +887,12 @@ def get_ip_connections_details(router_id, ip_address):
     if not router.get("username") or not router.get("password"):
         return {"destinations": [], "ports": [], "connections": [], "error": "No API credentials configured", "estimated": True}
 
-    api, connection, error = routeros_client.connect_to_router(
-        router["host"], router["port"], router["username"], router["password"]
-    )
-    if not api:
-        return {"destinations": [], "ports": [], "connections": [], "error": error or "Connection failed", "estimated": True}
-
-    try:
+    with routeros_client.router_connection(
+        router_id, router["host"], router["port"], router["username"], router["password"]
+    ) as (api, error):
+        if api is None:
+            return {"destinations": [], "ports": [], "connections": [], "error": error or "Connection failed", "estimated": True}
         raw = routeros_client.safe_api_call(api, "/ip/firewall/connection")["data"] or []
-    finally:
-        if connection:
-            connection.disconnect()
 
     destinations = {}
     ports = {}
@@ -960,12 +994,16 @@ def get_live_firewall_connections(router_id):
     if not router:
         return {"error": "Not found"}
 
-    api, connection, error = routeros_client.connect_to_router(
-        router["host"], router["port"], router["username"], router["password"]
-    )
-    if not api:
-        return {"error": error or "Failed to connect"}
+    with routeros_client.router_connection(
+        router_id, router["host"], router["port"], router["username"], router["password"]
+    ) as (api, error):
+        if api is None:
+            return {"error": error or "Failed to connect"}
+        return _fetch_firewall_connections(router_id, api)
 
+
+def _fetch_firewall_connections(router_id, api):
+    """Collect and cache live firewall connections for one router (pooled api)."""
     try:
         connections_data = routeros_client.safe_api_call(api, "/ip/firewall/connection")["data"] or []
 
@@ -1037,8 +1075,6 @@ def get_live_firewall_connections(router_id):
             "total_upload": 0, "total_download": 0,
             "total_upload_human": "0 B", "total_download_human": "0 B",
         }
-    finally:
-        connection.disconnect()
 
 
 # ─── Logs ─────────────────────────────────────────────────────────────────
@@ -1177,16 +1213,17 @@ def run_router_backup(router_id):
     router = get_router(router_id)
     if not router:
         return None
-    api, connection, error = routeros_client.connect_to_router(
-        router["host"], router["port"], router["username"], router["password"]
-    )
-    if not api:
-        return None
     try:
-        result = routeros_client.safe_api_call(api, "/export")
-        if result["error"] or not result["data"]:
-            return None
-        connection.disconnect()
+        with routeros_client.router_connection(
+            router_id, router["host"], router["port"], router["username"], router["password"]
+        ) as (api, error):
+            if api is None:
+                return None
+            result = routeros_client.safe_api_call(api, "/export")
+            if result["error"] or not result["data"]:
+                return None
+        # The export is fully read into memory; write the file after releasing
+        # the pooled connection so the lock is held only for the API round-trip.
         backup_dir = ensure_backup_dir(router_id)
         filename = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S") + ".rsc"
         with open(os.path.join(backup_dir, filename), "w") as handle:
@@ -1200,9 +1237,6 @@ def run_router_backup(router_id):
         return filename
     except Exception:  # noqa: BLE001
         return None
-    finally:
-        if connection:
-            connection.disconnect()
 
 
 def get_backup_list(router_id):
@@ -1240,6 +1274,10 @@ def get_snmp_detailed_info(router):
     name = router["name"]
     api_port = router.get("port", 8728)
     snmp_port = router.get("snmp_port", 161)
+    fresh_after = _utc_now() - datetime.timedelta(seconds=180)
+    poll_state = get_snmp_poll_state(router_id)
+    poll_ok = (poll_state["status"] == "online" and
+               poll_state["checked_at"] >= fresh_after.strftime("%Y-%m-%d %H:%M:%S")) if poll_state else True
 
     info = {
         "identity": {"name": name},
@@ -1256,10 +1294,18 @@ def get_snmp_detailed_info(router):
                       temperature_celsius, cpu_cores, board_name, architecture,
                       platform, firmware, router_name
                FROM snmp_system_metrics
-               WHERE router_id=? AND cpu_percent IS NOT NULL
+               WHERE router_id=? AND cpu_percent IS NOT NULL AND timestamp>=?
                ORDER BY timestamp DESC LIMIT 1""",
-            (router_id,),
+            (router_id, fresh_after),
         ).fetchone()
+        latest_sample = conn.execute(
+            "SELECT MAX(timestamp) FROM snmp_system_metrics WHERE router_id=?", (router_id,)
+        ).fetchone()[0]
+        info["_source"]["stale"] = not latest_sample or latest_sample < fresh_after.strftime("%Y-%m-%d %H:%M:%S")
+
+        info["_source"]["stale"] = not poll_ok or info["_source"]["stale"]
+        if not poll_ok:
+            row = None
 
         if row and row["cpu_percent"] is not None:
             cpu = row["cpu_percent"]
@@ -1267,14 +1313,14 @@ def get_snmp_detailed_info(router):
             memory_used = row["memory_used"]
             uptime = row["uptime_seconds"]
             memory_percent = "N/A"
-            if memory_total and memory_used and memory_total > 0:
+            if memory_total and memory_used is not None and memory_total > 0:
                 memory_percent = round(memory_used / memory_total * 100, 1)
             info["resources"] = {
                 "cpu_load": str(int(cpu)),
                 "total_memory": str(memory_total) if memory_total else "N/A",
-                "free_memory": str(memory_total - memory_used) if memory_total and memory_used else "N/A",
-                "used_memory": str(memory_used) if memory_used else "N/A",
-                "uptime": f"{uptime // 3600}h {(uptime % 3600) // 60}m" if uptime else "N/A",
+                "free_memory": str(memory_total - memory_used) if memory_total and memory_used is not None else "N/A",
+                "used_memory": str(memory_used) if memory_used is not None else "N/A",
+                "uptime": f"{uptime // 3600}h {(uptime % 3600) // 60}m" if uptime is not None else "N/A",
                 "cpu_count": str(row["cpu_cores"]) if row["cpu_cores"] else "N/A",
                 "version": row["firmware"] or "via SNMP",
                 "board_name": row["board_name"] or "N/A",
@@ -1286,8 +1332,8 @@ def get_snmp_detailed_info(router):
                 info["health"] = {"temperature": str(row["temperature_celsius"])}
 
         interfaces = conn.execute(
-            "SELECT DISTINCT interface_name FROM snmp_interface_metrics WHERE router_id=?", (router_id,)
-        ).fetchall()
+            "SELECT DISTINCT interface_name FROM snmp_interface_metrics WHERE router_id=? AND timestamp>=?", (router_id, fresh_after)
+        ).fetchall() if poll_ok else []
         info["interfaces"] = [
             {"name": row["interface_name"], "type": "SNMP", "running": "true", "mtu": "N/A"}
             for row in interfaces

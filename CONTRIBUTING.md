@@ -5,12 +5,13 @@ Thank you for your interest in contributing to this project! This document provi
 ## Quick Start
 
 ### Prerequisites
-- Python 3.9+ or Docker
+- Python 3.12+ or Docker
 - Git
 
-### Default Login Credentials
-- **Username**: `admin`
-- **Password**: `admin`
+### First Login
+Username: `admin`. Read the generated `data/.bootstrap_password` locally, or set
+`DEFAULT_PASSWORD` before creating an empty database. Existing logins are unchanged.
+See [SECURITY.md](SECURITY.md).
 
 ### Running from Git (Development Mode)
 
@@ -36,7 +37,7 @@ cd mk-monitoring
 ./setup.sh
 
 # Start the application
-./run.sh
+./start.sh
 
 # Access the application at http://localhost:8080
 ```
@@ -78,6 +79,10 @@ python app.py
 ./run.sh
 ```
 
+`./run.sh` starts Flask only. Use `./start.sh` to run Flask with the SNMP,
+bandwidth, Flow, and alert collectors. A manual SNMP setup also needs the
+`snmp` system package.
+
 #### Production Mode (Docker)
 ```bash
 docker-compose up -d
@@ -96,6 +101,8 @@ mk-monitoring/
 ├── services.py               # Business logic
 ├── snmp_collector.py         # Background SNMP metrics collector
 ├── bandwidth_collector.py    # Background per-IP bandwidth collector
+├── flow_collector.py         # NetFlow v5/v9 UDP receiver
+├── flow_service.py           # Flow read-side summaries
 ├── alert_engine.py           # Background alert evaluator
 ├── requirements.txt          # Python dependencies
 ├── templates/                # HTML templates
@@ -125,7 +132,10 @@ mk-monitoring/
 
 3. Commit your changes:
    ```bash
-   git add .
+   git status --short
+   git diff --check
+   # Stage only reviewed source files, never runtime data
+   git add <reviewed-files>
    git commit -m "Description of your changes"
    ```
 
@@ -139,29 +149,21 @@ mk-monitoring/
 ### Common Issues
 
 #### Database Errors
-If you encounter database errors, try:
-```bash
-# Rebuild Docker containers
-docker-compose down
-docker-compose build --no-cache
-docker-compose up
-
-# Or manually delete and recreate the database
-rm -rf data/
-mkdir data
-```
+Back up `data/` and its key files before troubleshooting. Verify directory ownership
+and `DB_PATH`, then inspect startup logs. Never delete your data to fix a permission
+error. `start.sh` now fails instead of copying the database into a shared `/tmp` file.
 
 #### Port Conflicts
 If port 8080 is already in use:
 ```bash
 # Change the port in docker-compose.yml
 # Or run with a different port
-python app.py --port 8081
+PORT=8081 python app.py
 ```
 
 ### Getting Help
 - Check the README.md for detailed documentation
-- Review the troubleshooting guides in the docs/ directory
+- Review the troubleshooting section in README.md and SECURITY.md
 - Open an issue if you encounter bugs
 
 ## Code Style
@@ -178,5 +180,6 @@ Before submitting changes, please:
 - Verify the application starts without errors
 - Test adding and monitoring routers
 - Check that the bandwidth collector runs correctly
+- Run `python -m unittest discover -s tests -v` for Flow parsing, storage, and page checks
 
 Thank you for contributing!

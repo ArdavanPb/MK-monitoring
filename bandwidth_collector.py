@@ -35,19 +35,16 @@ def collect_all():
         if not router.get("username") or not router.get("password"):
             continue
 
-        api, connection, error = routeros_client.connect_to_router(
-            router["host"], router["port"], router["username"], router["password"]
-        )
-        if not api:
-            logger.warning("Skipping %s: %s", router["name"], error)
-            continue
+        with routeros_client.router_connection(
+            router["id"], router["host"], router["port"], router["username"], router["password"]
+        ) as (api, error):
+            if api is None:
+                logger.warning("Skipping %s: %s", router["name"], error)
+                continue
 
-        try:
             logger.info("Collecting bandwidth for %s (%s)", router["name"], router["host"])
             services.collect_ip_bandwidth_data(router["id"], api)
             services.collect_interface_bandwidth_data(router["id"], api)
-        finally:
-            connection.disconnect()
 
 
 if __name__ == "__main__":

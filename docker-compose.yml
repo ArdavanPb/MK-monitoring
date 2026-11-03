@@ -1,13 +1,19 @@
 services:
   mikrotik-monitor:
     build: .
+    init: true
     ports:
       - "8080:8080"
+      - "2055:2055/udp"
     environment:
       # Set a stable secret key (optional: a key file is persisted under /app/data).
       # SECRET_KEY: "change-me-to-a-long-random-string"
       # FERNET_KEY: "base64-encoded-fernet-key-for-credential-encryption"
       DB_PATH: "/app/data/routers.db"
+      FLOW_PORT: "2055"
+      DEFAULT_USERNAME: "${DEFAULT_USERNAME:-admin}"
+      DEFAULT_PASSWORD: "${DEFAULT_PASSWORD:-}"
+      SESSION_COOKIE_SECURE: "${SESSION_COOKIE_SECURE:-false}"
     volumes:
       - ./data:/app/data
     restart: unless-stopped

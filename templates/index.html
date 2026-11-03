@@ -21,14 +21,18 @@
 {% if routers %}
     {% set total = routers|length %}
     {% set online = routers|selectattr('status', 'equalto', 'online')|list|length %}
-    {% set offline = total - online %}
-    {% set snmp = routers|selectattr('source_type', 'equalto', 'SNMP')|list|length %}
+    {% set offline = routers|selectattr('status', 'equalto', 'offline')|list|length %}
+    {% set unknown = total - online - offline %}
+    {% set snmp = routers|selectattr('snmp_enabled')|list|length %}
 
     <div class="stat-grid">
         {{ stat_card('router', 'blue', total, 'Total Routers') }}
         {{ stat_card('check-circle', 'green', online, 'Online') }}
         {{ stat_card('x-circle', 'red', offline, 'Offline') }}
-        {{ stat_card('broadcast', 'cyan', snmp, 'SNMP Monitored') }}
+        {{ stat_card('question-circle', 'amber', unknown, 'Unknown / Waiting') }}
+        {{ stat_card('broadcast', 'cyan', snmp, 'SNMP Configured') }}
+        {{ stat_card('diagram-3', 'blue', flowing_count, 'Flow Receiving') }}
+        {{ stat_card('exclamation-triangle', 'amber', active_alerts, 'Active Alerts') }}
     </div>
 
     <div class="router-grid">
@@ -46,9 +50,22 @@
                     <i class="bi bi-ethernet me-1"></i>{{ router.host }}:{{ router.display_port }}
                     {% if router.cached %}<span class="badge-soft gray ms-1">cached</span>{% endif %}
                 </div>
+                <div class="d-flex flex-wrap gap-1 mb-3">
+                    {% if router.snmp_enabled %}
+                        <span class="badge-soft {{ 'green' if router.snmp_fresh else 'red' if router.snmp_state == 'offline' else 'amber' }}">
+                            SNMP {{ router.snmp_state }}
+                        </span>
+                    {% endif %}
+                    {% if router.api_issue and router.source_type == 'FLOW' %}<span class="badge-soft red" title="{{ router.api_issue }}">API unavailable</span>{% endif %}
+                    {% if router.flow_enabled %}
+                        <span class="badge-soft {{ 'green' if router.flow.fresh else 'amber' }}">
+                            Flow {{ 'receiving' if router.flow.fresh else 'waiting / stale' }}
+                        </span>
+                    {% endif %}
+                </div>
 
                 {% if router.info.error %}
-                    <div class="alert alert-danger py-2 px-3 small mb-0">
+                    <div class="alert alert-{{ 'warning' if router.status == 'unknown' else 'danger' }} py-2 px-3 small mb-0">
                         <i class="bi bi-exclamation-triangle me-1"></i>{{ router.info.error }}
                     </div>
                 {% else %}
@@ -89,18 +106,30 @@
                         <span class="metric-value text-truncate">{{ router.info.version or 'N/A' }}</span>
                     </div>
                 {% endif %}
+                {% if router.flow_enabled %}
+                    <div class="metric-row">
+                        <span class="metric-label">Flow average (5 min)</span>
+                        <span class="metric-value">{{ (router.flow.average_bps / 1000000)|round(2) }} Mbps</span>
+                    </div>
+                    <div class="metric-row">
+                        <span class="metric-label">Flow last seen</span>
+                        <span class="metric-value">{{ router.flow.age_seconds ~ 's ago' if router.flow.age_seconds is not none else 'Never' }}</span>
+                    </div>
+                {% endif %}
             </div>
             <div class="card-footer">
                 <div class="d-flex justify-content-between align-items-center">
-                    <a href="{{ url_for('monitor_router', router_id=router.id) }}" class="btn btn-sm btn-primary">
+                    <a href="{{ url_for('monitor_router', router_id=router.id) if router.api_enabled or router.snmp_enabled else url_for('flow_page', router_id=router.id) }}" class="btn btn-sm btn-primary">
                         <i class="bi bi-speedometer2 me-1"></i>Monitor
                     </a>
                     <div class="d-flex gap-1">
-                        <a href="{{ url_for('edit_router', router_id=router.id) }}" class="btn btn-sm btn-outline-secondary" title="Edit"><i class="bi bi-pencil"></i></a>
+                        {% if session.role in ('admin', 'operator') %}<a href="{{ url_for('edit_router', router_id=router.id) }}" class="btn btn-sm btn-outline-secondary" title="Edit"><i class="bi bi-pencil"></i></a>{% endif %}
+                        {% if router.api_enabled and session.role in ('admin', 'operator') %}
                         <form method="POST" action="{{ url_for('refresh_router', router_id=router.id) }}" class="d-inline m-0" title="Refresh">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                             <button type="submit" class="btn btn-sm btn-outline-secondary"><i class="bi bi-arrow-clockwise"></i></button>
                         </form>
+                        {% endif %}
                         {% if session.role == 'admin' %}
                         <form method="POST" action="{{ url_for('delete_router', router_id=router.id) }}" class="d-inline m-0" onsubmit="return confirm('Delete this router?')" title="Delete">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -109,12 +138,19 @@
                         {% endif %}
                     </div>
                 </div>
+                {% if router.flow_enabled %}
                 <div class="mt-2">
+                    <a href="{{ url_for('flow_page', router_id=router.id) }}" class="btn btn-sm btn-outline-primary w-100">
+                        <i class="bi bi-diagram-3 me-1"></i>Traffic Flow
+                    </a>
+                </div>
+                {% endif %}
+                {% if router.api_enabled %}<div class="mt-2">
                     <a href="{{ url_for('connections_page', router_id=router.id) }}" class="btn btn-sm btn-outline-info w-100" id="live-connections-btn-{{ router.id }}">
                         <i class="bi bi-arrow-left-right me-1"></i>Live Connections
                         <span class="badge bg-secondary ms-1" id="connection-count-{{ router.id }}">0</span>
                     </a>
-                </div>
+                </div>{% endif %}
             </div>
         </div>
         {% endfor %}
@@ -140,7 +176,7 @@
                     countElement.textContent = response.data.count;
                 }
             })
-            .catch(() => { countElement.textContent = '&mdash;'; });
+            .catch(() => { countElement.textContent = '—'; });
     }
     document.addEventListener('DOMContentLoaded', function () {
         document.querySelectorAll('[id^="connection-count-"]').forEach(el => {

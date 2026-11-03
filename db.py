@@ -47,6 +47,8 @@ _SCHEMA = {
             snmp_auth_pass TEXT DEFAULT '',
             snmp_priv_protocol TEXT DEFAULT 'DES',
             snmp_priv_pass TEXT DEFAULT '',
+            flow_enabled INTEGER DEFAULT 0,
+            flow_source_ip TEXT DEFAULT '',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """,
@@ -149,6 +151,13 @@ _SCHEMA = {
             FOREIGN KEY(router_id) REFERENCES routers(id) ON DELETE CASCADE
         )
     """,
+    "snmp_poll_state": """
+        CREATE TABLE IF NOT EXISTS snmp_poll_state (
+            router_id INTEGER PRIMARY KEY REFERENCES routers(id) ON DELETE CASCADE,
+            status TEXT NOT NULL CHECK(status IN ('online','offline')),
+            checked_at TEXT NOT NULL
+        )
+    """,
     "alert_rules": """
         CREATE TABLE IF NOT EXISTS alert_rules (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -189,6 +198,36 @@ _SCHEMA = {
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """,
+    "flow_datagrams": """
+        CREATE TABLE IF NOT EXISTS flow_datagrams (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            router_id INTEGER NOT NULL REFERENCES routers(id) ON DELETE CASCADE,
+            received_at TEXT NOT NULL,
+            export_seconds INTEGER NOT NULL,
+            sequence INTEGER NOT NULL,
+            engine_type INTEGER NOT NULL,
+            engine_id INTEGER NOT NULL,
+            record_count INTEGER NOT NULL,
+            UNIQUE(router_id, export_seconds, sequence, engine_type, engine_id)
+        )
+    """,
+    "flow_records": """
+        CREATE TABLE IF NOT EXISTS flow_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            router_id INTEGER NOT NULL REFERENCES routers(id) ON DELETE CASCADE,
+            datagram_id INTEGER NOT NULL REFERENCES flow_datagrams(id) ON DELETE CASCADE,
+            received_at TEXT NOT NULL,
+            src_ip TEXT NOT NULL,
+            dst_ip TEXT NOT NULL,
+            src_port INTEGER NOT NULL,
+            dst_port INTEGER NOT NULL,
+            protocol INTEGER NOT NULL,
+            bytes INTEGER NOT NULL,
+            packets INTEGER NOT NULL,
+            input_if INTEGER NOT NULL,
+            output_if INTEGER NOT NULL
+        )
+    """,
 }
 
 # Column migrations applied idempotently for databases created before the
@@ -215,6 +254,8 @@ _COLUMN_MIGRATIONS = [
     ("snmp_system_metrics", "firmware", "TEXT"),
     ("snmp_system_metrics", "router_name", "TEXT"),
     ("snmp_system_metrics", "source_type", "TEXT DEFAULT 'SNMP'"),
+    ("routers", "flow_enabled", "INTEGER DEFAULT 0"),
+    ("routers", "flow_source_ip", "TEXT DEFAULT ''"),
 ]
 
 _INDEXES = {
@@ -229,6 +270,10 @@ _INDEXES = {
     "idx_alert_events_router": "alert_events(router_id,status)",
     "idx_alert_events_rule": "alert_events(rule_id)",
     "idx_audit_log_time": "audit_log(created_at)",
+    "idx_flow_records_router_time": "flow_records(router_id,received_at)",
+    "idx_flow_records_src": "flow_records(router_id,src_ip,received_at)",
+    "idx_flow_records_dst": "flow_records(router_id,dst_ip,received_at)",
+    "idx_flow_datagrams_router_time": "flow_datagrams(router_id,received_at)",
 }
 
 
@@ -279,12 +324,14 @@ def init_db():
 def _seed_default_user(conn):
     from security import hash_password
 
-    conn.execute(
-        "INSERT OR IGNORE INTO users (username, password_hash, role) VALUES (?, ?, ?)",
-        (config.DEFAULT_USERNAME, hash_password(config.DEFAULT_PASSWORD), "admin"),
+    # Bootstrap only an empty user table; restarts must not recreate accounts
+    # or elevate an account whose role was deliberately reduced.
+    if conn.execute("SELECT 1 FROM users LIMIT 1").fetchone():
+        return
+    password = config.DEFAULT_PASSWORD or config._read_or_create_key_file(
+        os.path.join(config.DATA_DIR, ".bootstrap_password")
     )
-    # Ensure the default admin account always holds the admin role.
     conn.execute(
-        "UPDATE users SET role='admin' WHERE username=? AND (role IS NULL OR role='viewer')",
-        (config.DEFAULT_USERNAME,),
+        "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+        (config.DEFAULT_USERNAME, hash_password(password), "admin"),
     )

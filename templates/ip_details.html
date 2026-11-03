@@ -32,7 +32,7 @@
             <div class="stat-icon green"><i class="bi bi-arrow-up-circle"></i></div>
             <div>
                 <div class="stat-value summary-value" data-bytes="{{ totals.upload_bytes }}">{{ totals.upload_bytes|format_bytes }}</div>
-                <div class="stat-label">Upload (outgoing)</div>
+                <div class="stat-label">Upload {% if flow_ip %}(Flow · last hour){% else %}(outgoing){% endif %}</div>
             </div>
         </div>
     </div>
@@ -41,7 +41,7 @@
             <div class="stat-icon blue"><i class="bi bi-arrow-down-circle"></i></div>
             <div>
                 <div class="stat-value summary-value" data-bytes="{{ totals.download_bytes }}">{{ totals.download_bytes|format_bytes }}</div>
-                <div class="stat-label">Download (incoming)</div>
+                <div class="stat-label">Download {% if flow_ip %}(Flow · last hour){% else %}(incoming){% endif %}</div>
             </div>
         </div>
     </div>
@@ -56,9 +56,14 @@
     </div>
 </div>
 
+
+
 <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
     <small class="text-muted">
-        {% if totals.has_data %}
+        {% if flow_ip %}
+            {{ flow_ip.flows }} Flow records in the last hour. The chart uses Traffic Flow.
+            <a href="{{ url_for('flow_page', router_id=router.id) }}">View all flows</a>
+        {% elif totals.has_data %}
             {{ totals.sample_count }} samples &middot; {{ totals.first_ts }} &rarr; {{ totals.last_ts }}
         {% else %}
             No historical traffic data for this IP yet (bandwidth collector may not be running).
@@ -81,6 +86,7 @@
         </div>
     </div>
     <div class="card-body">
+        <p id="chartSource" class="small text-muted" aria-live="polite"></p>
         <div id="chartEmpty" class="state-box d-none" style="min-height: 320px;">
             <div class="state-icon"><i class="bi bi-bar-chart-line"></i></div>
             <h5>No traffic history</h5>
@@ -138,12 +144,11 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="{{ url_for('static', filename='vendor/chartjs/chart.umd.min.js') }}"></script>
 <script>
 (function () {
     const ROUTER_ID = {{ router.id }};
     const IP = {{ ip|tojson }};
-    const MAX_POINTS = 60;
 
     // ---- formatting / escaping ----
     function esc(s) {
@@ -184,16 +189,18 @@
     // ---- traffic rate chart ----
     let chart = null;
     let chartPeriod = '1h';
+    let historyRequest = 0;
 
     function initChart() {
         const ctx = document.getElementById('rateChart').getContext('2d');
+        if (typeof Chart === 'undefined') { showChartEmpty('Chart library failed to load. Reload the page.'); return; }
         chart = new Chart(ctx, {
             type: 'line',
             data: {
                 labels: [],
                 datasets: [
-                    { label: 'Incoming', borderColor: '#0d6efd', backgroundColor: 'rgba(13,110,253,0.08)', data: [], fill: true, tension: 0.3, borderWidth: 2, pointRadius: 0 },
-                    { label: 'Outgoing', borderColor: '#198754', backgroundColor: 'rgba(25,135,84,0.08)', data: [], fill: true, tension: 0.3, borderWidth: 2, pointRadius: 0 }
+                    { label: 'Incoming', borderColor: '#0d6efd', backgroundColor: 'rgba(13,110,253,0.08)', data: [], fill: true, tension: 0, borderWidth: 2, pointRadius: 2, spanGaps: false },
+                    { label: 'Outgoing', borderColor: '#198754', backgroundColor: 'rgba(25,135,84,0.08)', data: [], fill: true, tension: 0, borderWidth: 2, pointRadius: 2, spanGaps: false }
                 ]
             },
             options: {
@@ -219,26 +226,25 @@
     }
 
     async function pollHistory() {
+        const requestId = ++historyRequest;
+        const period = chartPeriod;
+        if (!chart) return;
         try {
-            const res = await axios.get('/api/ip/' + ROUTER_ID + '/' + encodeURIComponent(IP) + '/history?period=' + chartPeriod);
-            if (!res.data.success) { showChartEmpty(res.data.error); return; }
-            const points = res.data.data.points || [];
-            if (!points.length) { showChartEmpty('No bandwidth history for this IP yet (collector not running or IP too new).'); return; }
-            let labels = points.map(function (p) { return p.timestamp.slice(11, 16); });
-            let incoming = points.map(function (p) { return p.download_mbps; });
-            let outgoing = points.map(function (p) { return p.upload_mbps; });
-            if (labels.length > MAX_POINTS) {
-                labels = labels.slice(-MAX_POINTS);
-                incoming = incoming.slice(-MAX_POINTS);
-                outgoing = outgoing.slice(-MAX_POINTS);
-            }
-            chart.data.labels = labels;
-            chart.data.datasets[0].data = incoming;
-            chart.data.datasets[1].data = outgoing;
-            chart.update();
+            const response = await fetch('/api/ip/' + ROUTER_ID + '/' + encodeURIComponent(IP) + '/history?period=' + period);
+            const payload = await response.json();
+            if (requestId !== historyRequest) return;
+            if (!response.ok || !payload.success) { showChartEmpty(payload.error); return; }
+            const data = payload.data;
+            document.getElementById('chartSource').textContent = data.note || '';
+            const points = data.points || [];
+            if (!points.length) { showChartEmpty('No ' + (data.source === 'flow' ? 'Flow exports' : 'API samples') + ' for this IP in the selected period. Try a longer period.'); return; }
+            chart.data.labels = points.map(p => p.timestamp.replace('T', ' ').slice(5, 19));
+            chart.data.datasets[0].data = points.map(p => p.download_mbps);
+            chart.data.datasets[1].data = points.map(p => p.upload_mbps);
             showChart();
+            chart.update('none');
         } catch (e) {
-            showChartEmpty('Failed to load traffic history.');
+            if (requestId === historyRequest) showChartEmpty('Failed to load traffic history. Check your session and retry.');
         }
     }
 

@@ -10,6 +10,8 @@
             {{ router.name }}
             {% if source_type == 'API' %}
                 {{ status_badge('online', 'Connected') }}
+            {% elif info._source and info._source.stale %}
+                <span class="badge-soft amber">SNMP stale</span>
             {% else %}
                 <span class="badge-soft amber">{{ source_label }}</span>
             {% endif %}
@@ -17,15 +19,16 @@
         <p class="page-subtitle">
             <span class="text-mono">{{ router.host }}:{{ source_port }}</span>
             &middot; via <strong>{{ source_label }}</strong>
-            {% if source_type == 'API' and router.snmp_enabled %}<span class="badge-soft cyan ms-1">SNMP available</span>{% endif %}
+            {% if source_type == 'API' and router.snmp_enabled %}<span class="badge-soft cyan ms-1">SNMP configured</span>{% endif %}
         </p>
     </div>
     <div class="page-actions">
         <a href="{{ url_for('index') }}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-1"></i>Dashboard</a>
-        <form method="POST" action="{{ url_for('refresh_router', router_id=router.id) }}" class="d-inline m-0">
+        {% if router.flow_enabled %}<a href="{{ url_for('flow_page', router_id=router.id) }}" class="btn btn-outline-primary"><i class="bi bi-diagram-3 me-1"></i>Traffic Flow</a>{% endif %}
+        {% if router.api_enabled and session.role in ('admin','operator') %}<form method="POST" action="{{ url_for('refresh_router', router_id=router.id) }}" class="d-inline m-0">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <button type="submit" class="btn btn-outline-secondary"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
-        </form>
+        </form>{% endif %}
         {% if session.role in ('admin','operator') and source_type != 'SNMP' %}
             <form method="POST" action="{{ url_for('trigger_backup', router_id=router.id) }}" class="d-inline m-0" onsubmit="return confirm('Run backup now?')">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -35,6 +38,10 @@
         {% endif %}
     </div>
 </div>
+
+{% if source_type == 'SNMP' and info._source.stale %}
+<div class="alert alert-warning">SNMP has not produced a fresh sample in the last 3 minutes. Check the collector, community, and UDP access to the router.</div>
+{% endif %}
 
 {% if info.api_errors %}
 <div class="alert alert-warning">
@@ -249,7 +256,7 @@
                             </div>
                             {% endif %}
                         {% else %}
-                            {{ empty_state('diagram-3', 'No network IPs', network_ips.error or 'No IPs discovered yet. This section requires API access to the router.') }}
+                            {{ empty_state('diagram-3', 'No network IPs', network_ips.error or 'No IPs discovered yet. Enable API discovery or Traffic Flow to observe IPs.') }}
                         {% endif %}
                     </div>
                 </div>

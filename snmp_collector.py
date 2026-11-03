@@ -9,7 +9,7 @@ import re
 import signal
 import subprocess
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 import db
 import security
@@ -100,11 +100,27 @@ def snmp_walk(host, community, oid, version=2, port=161):
 def poll_snmp_router(router_id, host, community, version, port):
     """Poll a router via SNMP CLI tools and store results."""
     try:
-        now = datetime.now()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
 
         uptime_raw = snmp_get(host, community, ".1.3.6.1.2.1.1.3.0", version, port)
         if uptime_raw is None:
             logger.warning("Router %s: SNMP connectivity test failed (no response from %s:%s)", router_id, host, port)
+            conn = db.get_connection()
+            try:
+                conn.execute(
+                    "INSERT OR REPLACE INTO snmp_poll_state (router_id,status,checked_at) VALUES (?,?,?)",
+                    (router_id, "offline", now),
+                )
+                conn.execute("DELETE FROM router_status_cache WHERE router_id=?", (router_id,))
+                conn.execute(
+                    """INSERT INTO router_status_cache
+                       (router_id, status, last_checked, router_info, source_type, snmp_port)
+                       VALUES (?,?,?,?,?,?)""",
+                    (router_id, "offline", now, "{}", "SNMP", port),
+                )
+                conn.commit()
+            finally:
+                conn.close()
             return False
 
         uptime_seconds = None
@@ -126,7 +142,7 @@ def poll_snmp_router(router_id, host, community, version, port):
 
         memory_total = snmp_get_int(host, community, ".1.3.6.1.4.1.14988.1.1.4.1.0", version, port)
         free_memory = snmp_get_int(host, community, ".1.3.6.1.4.1.14988.1.1.4.2.0", version, port)
-        memory_used = (memory_total - free_memory) if (memory_total and free_memory) else None
+        memory_used = (memory_total - free_memory) if (memory_total is not None and free_memory is not None) else None
 
         temperature = None
         for temp_oid in (".1.3.6.1.4.1.14988.1.1.3.10.0", ".1.3.6.1.2.1.99.1.1.1.4.1"):
@@ -162,11 +178,11 @@ def poll_snmp_router(router_id, host, community, version, port):
 
             snmp_info = {
                 "name": router_name or f"Router {router_id}",
-                "uptime": f"{uptime_seconds // 3600}h {(uptime_seconds % 3600) // 60}m" if uptime_seconds else "N/A",
-                "total_memory": str(memory_total) if memory_total else "N/A",
-                "free_memory": str(free_memory) if free_memory else "N/A",
-                "used_memory": str(memory_used) if memory_used else "N/A",
-                "memory_usage_percent": round(float(memory_used) / float(memory_total) * 100, 1) if (memory_used and memory_total and memory_total > 0) else "N/A",
+                "uptime": f"{uptime_seconds // 3600}h {(uptime_seconds % 3600) // 60}m" if uptime_seconds is not None else "N/A",
+                "total_memory": str(memory_total) if memory_total is not None else "N/A",
+                "free_memory": str(free_memory) if free_memory is not None else "N/A",
+                "used_memory": str(memory_used) if memory_used is not None else "N/A",
+                "memory_usage_percent": round(float(memory_used) / float(memory_total) * 100, 1) if (memory_used is not None and memory_total and memory_total > 0) else "N/A",
                 "cpu_load": str(int(cpu_value)) if cpu_value is not None else "N/A",
                 "cpu_count": str(cpu_cores) if cpu_cores else "N/A",
                 "version": firmware or "via SNMP",
@@ -174,6 +190,11 @@ def poll_snmp_router(router_id, host, community, version, port):
                 "architecture_name": architecture or "N/A",
             }
 
+            conn.execute("DELETE FROM router_status_cache WHERE router_id=?", (router_id,))
+            conn.execute(
+                "INSERT OR REPLACE INTO snmp_poll_state (router_id,status,checked_at) VALUES (?,?,?)",
+                (router_id, "online", now),
+            )
             conn.execute(
                 """INSERT OR REPLACE INTO router_status_cache
                    (router_id, status, last_checked, router_info, source_type, snmp_port)
@@ -182,8 +203,14 @@ def poll_snmp_router(router_id, host, community, version, port):
             )
 
             if_names = snmp_walk(host, community, ".1.3.6.1.2.1.2.2.1.2", version, port)
-            if_in = snmp_walk(host, community, ".1.3.6.1.2.1.2.2.1.10", version, port)
-            if_out = snmp_walk(host, community, ".1.3.6.1.2.1.2.2.1.16", version, port)
+            # Prefer 64-bit HC counters. Legacy 32-bit counters wrap quickly
+            # on busy interfaces and are only used when HC is unavailable.
+            if_in = snmp_walk(host, community, ".1.3.6.1.2.1.31.1.1.1.6", version, port)
+            if_out = snmp_walk(host, community, ".1.3.6.1.2.1.31.1.1.1.10", version, port)
+            if not if_in:
+                if_in = snmp_walk(host, community, ".1.3.6.1.2.1.2.2.1.10", version, port)
+            if not if_out:
+                if_out = snmp_walk(host, community, ".1.3.6.1.2.1.2.2.1.16", version, port)
 
             name_map = {}
             for suffix, value in if_names:

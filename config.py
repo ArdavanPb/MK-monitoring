@@ -60,12 +60,14 @@ SECRET_KEY = os.environ.get("SECRET_KEY") or _read_or_create_key_file(
 # persisted key file.
 FERNET_KEY = os.environ.get("FERNET_KEY")
 
+SESSION_COOKIE_SECURE = _env_bool("SESSION_COOKIE_SECURE", False)
+
 DEBUG = _env_bool("FLASK_DEBUG", False)
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8080"))
 
 DEFAULT_USERNAME = os.environ.get("DEFAULT_USERNAME", "admin")
-DEFAULT_PASSWORD = os.environ.get("DEFAULT_PASSWORD", "admin")
+DEFAULT_PASSWORD = os.environ.get("DEFAULT_PASSWORD")
 
 BACKUP_DIR = os.path.join(DATA_DIR, "backups")
 MAX_BACKUPS = int(os.environ.get("MAX_BACKUPS", "30"))
@@ -78,4 +80,14 @@ LOGIN_RATE_WINDOW = int(os.environ.get("LOGIN_RATE_WINDOW", "60"))
 CONNECTIONS_CACHE_TTL = int(os.environ.get("CONNECTIONS_CACHE_TTL", "10"))
 CONNECTIONS_CACHE_MAX = int(os.environ.get("CONNECTIONS_CACHE_MAX", "50"))
 
+# Max age (seconds) of a pooled RouterOS API connection before it is recycled on
+# next use. Protects against zombie sockets behind NAT/stateful firewalls that
+# drop idle sessions (a socket timeout would otherwise take ~15s to surface).
+ROUTER_API_POOL_MAX_AGE = int(os.environ.get("ROUTER_API_POOL_MAX_AGE", "300"))
+
 LOG_RETENTION_OPTIONS = (1, 3, 7, 30, 90)
+
+# RouterOS Traffic Flow (NetFlow v5/v9) UDP collector.
+FLOW_LISTEN_HOST = os.environ.get("FLOW_LISTEN_HOST", "0.0.0.0")
+FLOW_PORT = int(os.environ.get("FLOW_PORT", "2055"))
+FLOW_RETENTION_DAYS = int(os.environ.get("FLOW_RETENTION_DAYS", "7"))

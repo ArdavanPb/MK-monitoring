@@ -77,3 +77,26 @@ routers.db/
 # Temporary files
 *.tmp
 *.temp
+
+# Credentials, local tooling and generated runtime artifacts
+.env.*
+!.env.example
+.secret_key
+.fernet_key
+.bootstrap_password
+*.pem
+*.key
+*.db-*
+*.sqlite-*
+*.sqlite3-*
+*.rsc
+*.backup
+backups/
+.crush/
+.codex/
+.agents/
+.scratch/
+
+# Local reference images (may contain network details)
+photo/
+doc/

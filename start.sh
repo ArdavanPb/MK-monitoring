@@ -1,35 +1,14 @@
 #!/bin/bash
 
-# Check dependencies
-if ! python -c "import flask" 2>/dev/null; then
-    echo "Dependencies not installed. Run: pip install -r requirements.txt"
-    exit 1
+set -eu
+umask 077
+cd "$(dirname "$0")"
+if [ -f venv/bin/activate ]; then
+    source venv/bin/activate
 fi
-
 export DB_PATH="${DB_PATH:-data/routers.db}"
-
-# Check if DB is writable; use /tmp if not (e.g. root-owned from Docker)
-if ! python -c "open('$DB_PATH','a').close()" 2>/dev/null; then
-    echo "WARNING: $DB_PATH not writable, using /tmp/routers.db"
-    cp "$DB_PATH" /tmp/routers.db 2>/dev/null || true
-    chmod 666 /tmp/routers.db 2>/dev/null || true
-    export DB_PATH="/tmp/routers.db"
-fi
-
+# Fail clearly on permission errors; never copy credentials into a shared /tmp DB.
 python -c "import db; db.init_db()"
-sleep 2
-
-python -c "
-import sqlite3, sys
-import db
-conn = db.get_connection()
-try:
-    row = conn.execute(\"SELECT name FROM sqlite_master WHERE type='table' AND name='routers'\").fetchone()
-    if row: print('Database OK')
-    else: print('ERROR: no routers table'); sys.exit(1)
-finally:
-    conn.close()
-"
 
 python snmp_collector.py &
 SNMP_PID=$!
@@ -42,6 +21,10 @@ echo "Started alert engine (PID: $ALERT_PID)"
 python bandwidth_collector.py &
 BANDWIDTH_PID=$!
 echo "Started bandwidth collector (PID: $BANDWIDTH_PID)"
+
+python flow_collector.py &
+FLOW_PID=$!
+echo "Started Flow collector (PID: $FLOW_PID)"
 
 (
 while true; do
@@ -66,11 +49,14 @@ echo "Started backup scheduler (PID: $BACKUP_PID)"
 
 cleanup() {
     echo "Shutting down..."
-    kill $SNMP_PID $ALERT_PID $BANDWIDTH_PID $BACKUP_PID 2>/dev/null
+    kill $SNMP_PID $ALERT_PID $BANDWIDTH_PID $FLOW_PID $BACKUP_PID ${WEB_PID:-} 2>/dev/null || true
     wait
     echo "All stopped"
 }
-trap cleanup TERM INT
+trap cleanup EXIT
+trap 'exit 0' TERM INT
 
 echo "Starting Flask..."
-python app.py
+python app.py &
+WEB_PID=$!
+wait "$WEB_PID"
